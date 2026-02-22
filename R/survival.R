@@ -73,22 +73,25 @@ make_haz_fn = function(model, Z, horizon, Q, dispersion, lam_bound = NULL, du_bi
 #' Compensator integral: int_0^{min(T_i, horizon)} gamma(u, Z_i) lambda(u, Z_i) du.
 #' Composite Simpson's rule with endpoint correction.
 #'
-#' Uses bind_subjects for fast evaluation. The dispersion's dchis maps
-#' phi -> gamma, replacing the old hardcoded exp(-tau*W*phi).
+#' Uses bind_subjects for fast evaluation. Gamma is computed as
+#' W_i * base_gam_dispersion$dchis(W_i * phi) for sign-flipped weights,
+#' applied per-subset at each quadrature point.
 #'
 #' @param lam_bound Bound subjects for lambda model.
 #' @param gam_bound Bound subjects for gamma model.
 #' @param T_obs Observed times.
 #' @param D Event indicators.
-#' @param Z Covariate matrix.
+#' @param Z Covariate matrix (treatment in col 1).
 #' @param horizon Maximum follow-up.
 #' @param Q Number of quadrature points (even).
 #' @param lam_dispersion Dispersion for lambda model.
-#' @param gam_dispersion Dispersion for gamma model.
+#' @param gam_dispersion Base dispersion for gamma model (before sign-flip).
 #' @param du_bin Bin width for hazard conversion.
+#' @param W_eval Per-subject sign vector (2*W - 1), length n. If NULL, no sign-flip.
 #' @return List with comp (compensator values) and noise_var (int gamma^2 lambda du).
 compensator_simpson = function(lam_bound, gam_bound, T_obs, D, Z, horizon, Q,
-                               lam_dispersion, gam_dispersion, du_bin) {
+                               lam_dispersion, gam_dispersion, du_bin,
+                               W_eval = NULL) {
   n = length(T_obs)
   if (Q %% 2 != 0) Q = Q + 1
   h = horizon / Q
@@ -118,7 +121,12 @@ compensator_simpson = function(lam_bound, gam_bound, T_obs, D, Z, horizon, Q,
     lam_vals = pmax(lam_dispersion$dchis(lam_phi) / du_bin, 0)
 
     gam_phi = eval_phi(gam_bound, u, ar)
-    gam_vals = gam_dispersion$dchis(gam_phi)
+    if (!is.null(W_eval)) {
+      W_ar = W_eval[ar]
+      gam_vals = W_ar * gam_dispersion$dchis(W_ar * gam_phi)
+    } else {
+      gam_vals = gam_dispersion$dchis(gam_phi)
+    }
 
     # Per-person weight at this grid point
     w = rep(sw[k + 1], length(ar))
@@ -158,7 +166,12 @@ compensator_simpson = function(lam_bound, gam_bound, T_obs, D, Z, horizon, Q,
     lam_stub = pmax(lam_dispersion$dchis(lam_phi_stub) / du_bin, 0)
 
     gam_phi_stub = eval_phi_vec(gam_bound, T_eff[has_stub], has_stub)
-    gam_stub = gam_dispersion$dchis(gam_phi_stub)
+    if (!is.null(W_eval)) {
+      W_stub = W_eval[has_stub]
+      gam_stub = W_stub * gam_dispersion$dchis(W_stub * gam_phi_stub)
+    } else {
+      gam_stub = gam_dispersion$dchis(gam_phi_stub)
+    }
 
     comp[has_stub] = comp[has_stub] + gam_stub * lam_stub * frac[has_stub] / 2
     noise_var[has_stub] = noise_var[has_stub] + gam_stub^2 * lam_stub * frac[has_stub] / 2

@@ -127,20 +127,17 @@ bregbal_surv = function(T_obs, D, W, X, kern,
 
     comp = compensator_simpson(lam_bound, gam_bound,
                                T_obs[eval_idx], D[eval_idx], eval_Z, horizon, Q_comp,
-                               lam_dispersion, gam_disp_pool, du_bin)
+                               lam_dispersion, gam_dispersion, du_bin,
+                               W_eval = W_eval)
 
-    # Dirac
+    # Dirac: gamma(T_i, Z_i) = W_i * base.dchis(W_i * phi)
     n_eval = length(eval_idx)
     dirac = rep(0, n_eval)
     events = which(D[eval_idx] == 1 & T_obs[eval_idx] <= horizon)
     if (length(events) > 0) {
       phi_ev = eval_phi_vec(gam_bound, T_obs[eval_idx[events]], events)
-      dirac[events] = gam_disp_pool$dchis(phi_ev)
-      # Wait — gam_disp_pool has W_pool, but dirac needs W from eval subjects.
-      # Need to use eval-level dispersion with per-event W.
-      W_ev = 2 * eval_Z[events, 1] - 1
-      gam_disp_ev = signflip(gam_dispersion, W_ev)
-      dirac[events] = gam_disp_ev$dchis(phi_ev)
+      W_ev = W_eval[events]
+      dirac[events] = W_ev * gam_dispersion$dchis(W_ev * phi_ev)
     }
 
     correction = dirac - comp$comp
