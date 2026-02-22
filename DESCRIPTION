@@ -1,0 +1,17 @@
+Package: balancing
+Title: Bregman Balancing Weights
+Version: 0.1.0
+Authors@R: person("David", "Hirshberg", role = c("aut", "cre"),
+                  email = "david.a.hirshberg@gmail.com")
+Description: Kernel balancing weights via Bregman method-of-moments with
+    pluggable dispersions, kernels, and estimands. Supports survival and
+    single-outcome settings with adaptive regularization (Lepski) and
+    cross-fitting.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Suggests:
+    testthat (>= 3.0.0),
+    grf
+Config/testthat/edition: 3
