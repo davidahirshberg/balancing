@@ -64,12 +64,18 @@ crossfit_single = function(Y, W, X, kern, estimand, dispersion,
       mu0_sel[, j] = predict(models[[j]], Z0_sel)
     }
 
-    fits = list(models = models, mu1_hat = mu1_sel, mu0_hat = mu0_sel)
+    # Compute dir_val / dir_se for tuning
+    dir_val = numeric(length(eta_grid))
+    dir_se = numeric(length(eta_grid))
+    for (j in seq_along(eta_grid)) {
+      dir_val[j] = estimand$theta(mu1_sel[, j], mu0_sel[, j])
+      dir_se[j] = estimand$se(mu1_sel[, j], mu0_sel[, j], sum(sel_idx))
+    }
 
     # Select eta
-    sel = tuning_outcome$select(fits, eta_grid, estimand, n = sum(sel_idx))
+    sel = tuning_outcome$select(dir_val, dir_se, eta_grid, n = sum(sel_idx))
     selected_eta[ff] = sel$eta
-    model_sel = sel$model
+    model_sel = models[[sel$idx]]
 
     # Predict on evaluation fold
     Z1_eval = Z_eval; Z1_eval[, 1] = 1

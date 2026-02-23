@@ -56,7 +56,13 @@ kernel_matrix.product_kernel = function(A, B, kern) {
   iw = kern$iw
   niw = setdiff(1:ncol(A), iw)
   Kx = kernel_matrix(A[, niw, drop = FALSE], B[, niw, drop = FALSE], kern$k_x)
-  mask = outer(A[, iw], B[, iw], "==")
+  if (length(iw) == 1) {
+    mask = outer(A[, iw], B[, iw], "==")
+  } else {
+    # Row-wise equality across multiple grouping columns
+    mask = matrix(TRUE, nrow(A), nrow(B))
+    for (j in iw) mask = mask & outer(A[, j], B[, j], "==")
+  }
   Kx * mask
 }
 

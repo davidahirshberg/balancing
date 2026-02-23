@@ -198,11 +198,34 @@ discretize = function(dgp, n_steps, Q_bin = 20) {
   disc_hazard = function(u, Z) 1 - exp(-integrate_bin(dgp$hazard, u, Z))
   disc_censor = function(u, Z) 1 - exp(-integrate_bin(dgp$censor_hazard, u, Z))
 
-  make_dgp(name = paste0(dgp$name, "_disc", n_steps),
-           hazard = disc_hazard, censor_hazard = disc_censor,
-           propensity = dgp$propensity, covariance = dgp$covariance,
-           horizon = horizon, time = "discrete", grid = grid,
-           draw_X = dgp$draw_X)
+  disc_dgp = make_dgp(name = paste0(dgp$name, "_disc", n_steps),
+                      hazard = disc_hazard, censor_hazard = disc_censor,
+                      propensity = dgp$propensity, covariance = dgp$covariance,
+                      horizon = horizon, time = "discrete", grid = grid,
+                      draw_X = dgp$draw_X)
+
+  # generate_from: take continuous data, bin times to discrete grid.
+  # Same subjects, same events, just coarser time resolution.
+  disc_dgp$generate_from = function(cts_dat) {
+    # Bin continuous T_obs to the discrete grid.
+    # Subjects with T_obs > horizon keep T_obs = Inf (admin censored at horizon).
+    idx = findInterval(cts_dat$T_obs, c(0, grid), rightmost.closed = TRUE)
+    idx = pmin(idx, n_steps)
+    T_disc = grid[idx]
+    T_disc[cts_dat$T_obs > horizon] = Inf
+
+    # Recompute truth on this sample's Z
+    truth = compute_truth(disc_hazard, cts_dat$Z, horizon, "discrete", grid)
+
+    list(X = cts_dat$X, A = cts_dat$A, Z = cts_dat$Z,
+         T_obs = T_disc, D = cts_dat$D, pi_x = cts_dat$pi_x,
+         psi1_true = truth$psi1, psi0_true = truth$psi0,
+         ate_true = truth$psi1 - truth$psi0,
+         rmst1_true = truth$rmst1, rmst0_true = truth$rmst0,
+         horizon = horizon, grid = grid, n_steps = n_steps)
+  }
+
+  disc_dgp
 }
 
 

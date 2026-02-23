@@ -1,9 +1,13 @@
 ## Tuning: pluggable regularization selection.
 ##
-## A tuning strategy provides $select(fits, eta_grid, estimand, ...),
-## which returns a list with $eta, $idx, $model, $mu1_hat, $mu0_hat.
+## A tuning strategy provides $select(dir_val, dir_se, eta_grid),
+## which returns a list with $idx and $eta (the selected grid point).
 ##
 ## Or it's a bare number / function, coerced by as_tuning().
+##
+## The pipeline computes dir_val[j] = plug-in functional at eta_grid[j]
+## and dir_se[j] = its standard error, then hands these to the tuning
+## strategy. The strategy knows nothing about survival vs single-outcome.
 
 # ============================================================
 # Coerce number/function to tuning strategy
@@ -25,17 +29,10 @@ fixed_tuning = function(eta) {
   list(
     name = "fixed",
     eta = eta,
-    select = function(fits, eta_grid, estimand, ...) {
-      # Find closest eta in grid, or just use the fixed value
-      if (!missing(eta_grid) && !is.null(eta_grid)) {
-        idx = which.min(abs(eta_grid - eta))
-        list(eta = eta_grid[idx], idx = idx,
-             model = fits$models[[idx]],
-             mu1_hat = fits$mu1_hat[, idx],
-             mu0_hat = fits$mu0_hat[, idx])
-      } else {
-        list(eta = eta, idx = NA, model = NULL, mu1_hat = NULL, mu0_hat = NULL)
-      }
+    needs_grid = FALSE,
+    select = function(dir_val, dir_se, eta_grid, ...) {
+      idx = which.min(abs(eta_grid - eta))
+      list(eta = eta_grid[idx], idx = idx)
     }
   )
 }
@@ -45,17 +42,11 @@ rule_tuning = function(fn) {
   list(
     name = "rule",
     fn = fn,
-    select = function(fits, eta_grid, estimand, n = NULL, ...) {
+    needs_grid = FALSE,
+    select = function(dir_val, dir_se, eta_grid, n = NULL, ...) {
       eta = fn(n, ...)
-      if (!missing(eta_grid) && !is.null(eta_grid)) {
-        idx = which.min(abs(eta_grid - eta))
-        list(eta = eta_grid[idx], idx = idx,
-             model = fits$models[[idx]],
-             mu1_hat = fits$mu1_hat[, idx],
-             mu0_hat = fits$mu0_hat[, idx])
-      } else {
-        list(eta = eta, idx = NA, model = NULL, mu1_hat = NULL, mu0_hat = NULL)
-      }
+      idx = which.min(abs(eta_grid - eta))
+      list(eta = eta_grid[idx], idx = idx)
     }
   )
 }
@@ -66,8 +57,8 @@ rule_tuning = function(fn) {
 
 #' Lepski tuning: select largest admissible eta where the functional is stable.
 #'
-#' Monitors estimand$theta(mu1, mu0) across the eta grid, selects the largest
-#' eta where the functional hasn't drifted by more than C * estimand$se.
+#' Monitors dir_val across the eta grid, selects the largest eta where the
+#' functional hasn't drifted by more than C * dir_se from any smaller eta.
 #'
 #' Works for functionals whose plug-in "stabilizes then drifts" (TSM, ATE,
 #' survival probability, risk ratio). Fails for variance-type functionals
@@ -76,22 +67,17 @@ lepski_tuning = function(C = 3) {
   list(
     name = "lepski",
     C = C,
-    select = function(fits, eta_grid, estimand, ...) {
-      n = nrow(fits$mu1_hat)
+    needs_grid = TRUE,
+    select = function(dir_val, dir_se, eta_grid, ...) {
       m = length(eta_grid)
-
-      dir_val = numeric(m)
-      dir_se = numeric(m)
-      for (j in 1:m) {
-        dir_val[j] = estimand$theta(fits$mu1_hat[, j], fits$mu0_hat[, j])
-        dir_se[j] = estimand$se(fits$mu1_hat[, j], fits$mu0_hat[, j], n)
-      }
 
       # Lepski: largest admissible eta
       selected = 1
       for (j in 2:m) {
+        if (is.na(dir_val[j])) next
         admissible = TRUE
         for (i in 1:(j - 1)) {
+          if (is.na(dir_val[i])) next
           if (abs(dir_val[i] - dir_val[j]) > C * dir_se[i]) {
             admissible = FALSE; break
           }
@@ -99,11 +85,7 @@ lepski_tuning = function(C = 3) {
         if (admissible) selected = j
       }
 
-      list(eta = eta_grid[selected], idx = selected,
-           model = fits$models[[selected]],
-           mu1_hat = fits$mu1_hat[, selected],
-           mu0_hat = fits$mu0_hat[, selected],
-           all_dir_val = dir_val, all_dir_se = dir_se)
+      list(eta = eta_grid[selected], idx = selected)
     }
   )
 }
@@ -112,41 +94,39 @@ lepski_tuning = function(C = 3) {
 # Oracle: pick best eta using known truth (simulation only)
 # ============================================================
 
-#' Oracle tuning: pick eta minimizing |estimate - truth|.
+#' Oracle tuning: pick eta minimizing |dir_val - truth|.
 #' Only for simulations where truth is known.
 oracle_tuning = function(truth) {
   list(
     name = "oracle",
     truth = truth,
-    select = function(fits, eta_grid, estimand, ...) {
-      m = length(eta_grid)
-      dir_val = numeric(m)
-      for (j in 1:m)
-        dir_val[j] = estimand$theta(fits$mu1_hat[, j], fits$mu0_hat[, j])
-
-      selected = which.min(abs(dir_val - truth))
-
-      list(eta = eta_grid[selected], idx = selected,
-           model = fits$models[[selected]],
-           mu1_hat = fits$mu1_hat[, selected],
-           mu0_hat = fits$mu0_hat[, selected],
-           all_dir_val = dir_val)
+    needs_grid = TRUE,
+    select = function(dir_val, dir_se, eta_grid, ...) {
+      ok = !is.na(dir_val)
+      selected = which(ok)[which.min(abs(dir_val[ok] - truth))]
+      list(eta = eta_grid[selected], idx = selected)
     }
   )
 }
 
 # ============================================================
-# CV: cross-validated loss
+# CV: cross-validated loss (works differently — needs raw data)
 # ============================================================
 
 #' CV tuning: select eta minimizing cross-validated prediction loss.
 #' Uses the dispersion's loss (chis(phi) - Y*phi) as the CV criterion.
+#'
+#' Unlike other strategies, CV needs raw data to refit on sub-folds.
+#' The pipeline calls $select_from_data when tuning$name == "cv".
 cv_tuning = function(folds = 5) {
   list(
     name = "cv",
     folds = folds,
-    # CV selection requires refitting at each eta on each fold,
-    # so it takes raw data rather than pre-fitted models.
+    needs_grid = TRUE,
+    # Standard select interface — falls back to this if dir_val is provided
+    select = function(dir_val, dir_se, eta_grid) {
+      stop("CV tuning requires select_from_data, not select")
+    },
     select_from_data = function(Y, Z, kern, eta_grid, dispersion,
                                 intercept = TRUE, w = NULL) {
       n = length(Y)
