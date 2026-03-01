@@ -1,5 +1,7 @@
 ## Smoke test: bregbal_surv with bootstrap.
 ## Verify bootstrap machinery runs without error and produces sensible output.
+##
+## Flow: grid sweep → pick a point → bootstrap via init.
 
 pkg_dir = "/Users/skip/work/balancing/R"
 for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R",
@@ -18,21 +20,60 @@ kern = matern_kernel(sigma = 2, nu = 3/2)
 set.seed(1)
 dat = dgp$generate(200, p = 2)
 
-cat("Running bregbal_surv with bootstrap_reps=20...\n")
+# --- 1. Grid sweep (no bootstrap yet) ---
+cat("Running grid sweep...\n")
+t0 = proc.time()
+grid = bregbal_surv(dat$T_obs, dat$D, dat$A, dat$X, kern,
+                    estimand = surv_prob_estimand(),
+                    horizon = dgp$horizon,
+                    lam_dispersion = entropy_dispersion(),
+                    gam_dispersion = entropy_dispersion(),
+                    sigma2_lam_grid = 2^(-6:6),
+                    sigma2_gam_grid = 2^(-6:6),
+                    M_train = 15,
+                    Q_comp = 50,
+                    n_folds = 2,
+                    bootstrap_reps = 20)
+t_grid = (proc.time() - t0)[3]
+cat(sprintf("Grid done in %.1f seconds\n", t_grid))
+cat(sprintf("Path rows: %d\n", nrow(grid$path)))
+
+# --- 2. Select a point via Lepski ---
+n = nrow(dat$X)
+path = grid$path
+lam_vals = sort(unique(path$sigma2_lam))
+gam_vals = sort(unique(path$sigma2_gam))
+
+jg_mid = ceiling(length(gam_vals) / 2)
+lam_slice = path[path$sigma2_gam == gam_vals[jg_mid], ]
+lam_slice = lam_slice[order(lam_slice$sigma2_lam), ]
+
+sel = lepski_tuning()$select(tuning_context(
+  lam_vals / n, n = n,
+  dir_val = function() lam_slice$dir_val,
+  dir_se = function() lam_slice$dr_se,
+  loo_scores = function() lam_slice$loo_lam))
+
+sel_sigma2_lam = sel$eta * n
+gam_slice = path[path$sigma2_lam == sel_sigma2_lam, ]
+gam_slice = gam_slice[order(gam_slice$sigma2_gam), ]
+sel_sigma2_gam = gam_vals[which.min(gam_slice$loo_gam)]
+
+cat(sprintf("Selected: sigma2_lam=%.3g, sigma2_gam=%.3g\n",
+            sel_sigma2_lam, sel_sigma2_gam))
+
+# --- 3. Bootstrap at selected point via init ---
+cat("Running bootstrap (20 reps) via init...\n")
 t0 = proc.time()
 res = bregbal_surv(dat$T_obs, dat$D, dat$A, dat$X, kern,
                    estimand = surv_prob_estimand(),
                    horizon = dgp$horizon,
-                   lam_dispersion = entropy_dispersion(),
-                   gam_dispersion = entropy_dispersion(),
-                   sigma2_lam_grid = 2^(-6:6),
-                   sigma2_gam_grid = 2^(-6:6),
-                   M_train = 15,
-                   Q_comp = 50,
-                   n_folds = 2,
-                   bootstrap_reps = 20)
-elapsed = (proc.time() - t0)[3]
-cat(sprintf("Done in %.1f seconds\n\n", elapsed))
+                   sigma2_lam = sel_sigma2_lam,
+                   sigma2_gam = sel_sigma2_gam,
+                   bootstrap_reps = 20,
+                   init = grid$init)
+t_boot = (proc.time() - t0)[3]
+cat(sprintf("Bootstrap done in %.1f seconds\n\n", t_boot))
 
 cat(sprintf("est = %.5f  (truth = %.5f)\n", res$est, truth))
 cat(sprintf("se_eif = %.5f\n", res$se))

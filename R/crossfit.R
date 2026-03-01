@@ -5,9 +5,8 @@
 
 #' Create fold assignments.
 #' Returns integer vector of fold IDs (1:n_folds), balanced.
-make_folds = function(n, n_folds = 2, seed = NULL) {
-  if (!is.null(seed)) set.seed(seed)
-  rep(1:n_folds, length.out = n)[sample(n)]
+make_folds = function(n, n_folds = 2) {
+  (seq_len(n) %% n_folds) + 1L
 }
 
 #' Three-fold cross-fitting scaffold for single-outcome estimation.
@@ -28,10 +27,10 @@ make_folds = function(n, n_folds = 2, seed = NULL) {
 #' @return List with $est, $se, $eif, $selected_eta.
 crossfit_single = function(Y, W, X, kern, estimand, dispersion,
                            eta_grid, tuning_outcome,
-                           eta_gam = 0.1, n_folds = 3, seed = NULL) {
+                           eta_gam = 0.1, n_folds = 3) {
   n = length(Y)
   Z = cbind(W, X)
-  fold_id = make_folds(n, n_folds, seed)
+  fold_id = make_folds(n, n_folds)
   tuning_outcome = as_tuning(tuning_outcome)
 
   eif_all = rep(NA, n)

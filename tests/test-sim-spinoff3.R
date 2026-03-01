@@ -38,16 +38,30 @@ for (rep_i in 1:n_reps) {
   set.seed(rep_i)
   dat = dgp$generate(n, p = 2)
 
+  # Grid sweep (no bootstrap, no selection)
+  grid = bregbal_surv(dat$T_obs, dat$D, dat$A, dat$X, kern,
+                      estimand = est_surv,
+                      horizon = dgp$horizon,
+                      lam_dispersion = entropy_dispersion(),
+                      gam_dispersion = entropy_dispersion(),
+                      sigma2_lam_grid = c(0.1, 1, 10),
+                      sigma2_gam_grid = c(0.1, 1, 10),
+                      M_train = 15,
+                      Q_comp = 50,
+                      n_folds = 2)
+
+  # Select via Lepski, then evaluate at selected point using init
+  sel = lepski_tuning()$select(tuning_context(
+    c(0.1, 1, 10) / n, n = n,
+    dir_val = function() grid$path$dir_val[grid$path$sigma2_gam == 1],
+    dir_se = function() grid$path$dr_se[grid$path$sigma2_gam == 1],
+    loo_scores = function() grid$path$loo_lam[grid$path$sigma2_gam == 1]))
   res = bregbal_surv(dat$T_obs, dat$D, dat$A, dat$X, kern,
                      estimand = est_surv,
                      horizon = dgp$horizon,
-                     lam_dispersion = entropy_dispersion(),
-                     gam_dispersion = entropy_dispersion(),
-                     sigma2_lam_grid = c(0.1, 1, 10),
-                     sigma2_gam_grid = c(0.1, 1, 10),
-                     M_train = 15,
-                     Q_comp = 50,
-                     n_folds = 2)
+                     sigma2_lam = sel$eta * n,
+                     sigma2_gam = 1,
+                     init = grid$init)
 
   results = rbind(results, data.frame(
     rep = rep_i, estimand = "surv_prob",
