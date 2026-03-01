@@ -43,8 +43,8 @@ for (rep_i in 1:n_reps) {
                      horizon = dgp$horizon,
                      lam_dispersion = entropy_dispersion(),
                      gam_dispersion = entropy_dispersion(),
-                     eta_lam = 0.5,
-                     eta_gam = 5,
+                     sigma2_lam_grid = c(0.1, 1, 10),
+                     sigma2_gam_grid = c(0.1, 1, 10),
                      M_train = 15,
                      Q_comp = 50,
                      n_folds = 2)

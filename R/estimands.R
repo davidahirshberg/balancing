@@ -199,7 +199,7 @@ rr_estimand = function() {
 #'
 #' dot_psi_Z(u, w, x) = -S(tau | a, x) / (1 - h_u(a, x)).
 #' Does not depend on observed treatment w.
-surv_prob_tsm = function(arm) {
+surv_tsm = function(arm) {
   list(
     name = paste0("survival.probability.tsm", arm),
     type = "survival",
@@ -250,7 +250,7 @@ surv_prob_tsm = function(arm) {
 #'
 #' dot_psi_Z(u, w, x) = -S(tau|1,x)/(1-h_u(1,x)) + S(tau|0,x)/(1-h_u(0,x)).
 #' Does not depend on observed treatment w.
-surv_prob_ate = function() {
+surv_ate = function() {
   list(
     name = "survival.probability",
     type = "survival",
@@ -305,8 +305,10 @@ surv_prob_ate = function() {
   )
 }
 
-#' Backward-compatible wrapper. Returns surv_prob_ate().
-surv_prob_estimand = function() surv_prob_ate()
+#' Backward-compatible wrappers.
+surv_prob_ate = function() surv_ate()
+surv_prob_tsm = function(arm) surv_tsm(arm)
+surv_prob_estimand = function() surv_ate()
 
 # ---- Low-level RMST building blocks ----
 

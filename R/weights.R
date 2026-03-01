@@ -1,6 +1,7 @@
 ## Balancing weights: augmented system with sum constraint.
 ##
-## Solves: (K + eta I) gamma = n hP dot_psi, subject to sum constraint.
+## Solves: (K + n*eta*I) gamma = n hP dot_psi, subject to sum constraint.
+## eta is paper-scale: penalty = (eta/2)||f||^2. Ridge diagonal = n*eta*I.
 ## The constraint is enforced via Lagrange multiplier (augmented system).
 ##
 ## For ATE with product kernel: separate gamma1, gamma0 with arm-specific
@@ -12,13 +13,13 @@
 #' Compute balancing weights for binary treatment.
 #'
 #' Solves the augmented system:
-#'   [K + eta I,  c] [gamma]   [n hP dot_psi]
-#'   [c',         0] [nu   ] = [n           ]
+#'   [K + n*eta*I,  c] [gamma]   [n hP dot_psi]
+#'   [c',           0] [nu   ] = [n           ]
 #' where c is the constraint vector (arm indicator).
 #'
 #' @param Z Covariate matrix with treatment in column iw. (n x p)
 #' @param kern Kernel object.
-#' @param eta Regularization parameter (scalar).
+#' @param eta Regularization (paper scale). Penalty = (eta/2)||f||^2.
 #' @param iw Treatment column index (default 1).
 #' @return List with gamma1, gamma0 (n-vectors of weights).
 balancing_weights = function(Z, kern, eta, iw = 1) {
@@ -26,7 +27,7 @@ balancing_weights = function(Z, kern, eta, iw = 1) {
   n = nrow(Z)
   W = Z[, iw]
   K = kernel_matrix(Z, Z, kern)
-  A = K + eta * diag(n)
+  A = K + n * eta * diag(n)
 
   # gamma1: constraint on W==1 units
   c1 = as.numeric(W == 1)

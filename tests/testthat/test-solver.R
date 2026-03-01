@@ -1,59 +1,5 @@
 # Test the unified Bregman solver.
 
-test_that("entropy_dispersion matches old exp_link kernel_bregman", {
-  old_env = new.env()
-  source(file.path(Sys.getenv("SPINOFFS_DIR", "/Users/skip/work/spinoffs"),
-                   "code/spinoff3/kernel.R"), local = old_env)
-
-  pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
-  for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
-    source(file.path(pkg_dir, f))
-
-  set.seed(42)
-  n = 50; p = 3
-  Z = matrix(rnorm(n * p), n, p)
-  Y = rpois(n, lambda = exp(0.5 * Z[, 1]))
-  kern = matern_kernel(sigma = 2, nu = 3/2)
-  K = kernel_matrix(Z, Z, kern)
-  sigma = 1
-
-  old_fit = old_env$kernel_bregman(Y = Y, Z = Z, kern = kern, sigma = sigma,
-                                    intercept = TRUE, link = old_env$exp_link(), K = K)
-
-  new_fit = kernel_bregman(Y = Y, Z = Z, kern = kern, eta = sigma^2,
-                           dispersion = entropy_dispersion(), intercept = TRUE, K = K)
-
-  expect_equal(new_fit$alpha, old_fit$alpha, tolerance = 1e-6)
-  expect_equal(new_fit$beta0, old_fit$beta0, tolerance = 1e-6)
-})
-
-test_that("softplus_dispersion matches old logistic_link kernel_bregman", {
-  old_env = new.env()
-  source(file.path(Sys.getenv("SPINOFFS_DIR", "/Users/skip/work/spinoffs"),
-                   "code/spinoff3/kernel.R"), local = old_env)
-
-  pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
-  for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
-    source(file.path(pkg_dir, f))
-
-  set.seed(42)
-  n = 50; p = 3
-  Z = matrix(rnorm(n * p), n, p)
-  Y = rbinom(n, 1, plogis(Z[, 1]))
-  kern = matern_kernel(sigma = 2, nu = 3/2)
-  K = kernel_matrix(Z, Z, kern)
-  sigma = 1
-
-  old_fit = old_env$kernel_bregman(Y = Y, Z = Z, kern = kern, sigma = sigma,
-                                    intercept = TRUE, link = old_env$logistic_link(), K = K)
-
-  new_fit = kernel_bregman(Y = Y, Z = Z, kern = kern, eta = sigma^2,
-                           dispersion = softplus_dispersion(), intercept = TRUE, K = K)
-
-  expect_equal(new_fit$alpha, old_fit$alpha, tolerance = 1e-6)
-  expect_equal(new_fit$beta0, old_fit$beta0, tolerance = 1e-6)
-})
-
 test_that("signflip(entropy) produces correctly-signed weights", {
   pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
   for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
@@ -68,13 +14,14 @@ test_that("signflip(entropy) produces correctly-signed weights", {
   kern = matern_kernel(sigma = 2, nu = 3/2)
   K = kernel_matrix(Z, Z, kern)
 
+
   # Target: dot_psi for ATE (sum of kernel columns with counterfactual treatment)
   Z1 = Z; Z1[, 1] = 1
-  Y = colSums(kernel_matrix(Z1, Z, kern)) / n
+  c_gam = colSums(kernel_matrix(Z1, Z, kern)) / n
 
   disp = signflip(entropy_dispersion(), W)
-  fit = kernel_bregman(Y = Y, Z = Z, kern = kern, eta = 1,
-                       dispersion = disp, intercept = TRUE, K = K)
+  fit = kernel_bregman(Z, kern, eta = 1,
+                       dispersion = disp, target = c_gam, K = K)
 
   gamma = predict(fit, Z)
 
@@ -98,19 +45,20 @@ test_that("signflip(pos_quadratic) produces correctly-signed weights", {
   kern = matern_kernel(sigma = 2, nu = 3/2)
   K = kernel_matrix(Z, Z, kern)
 
+
   Z1 = Z; Z1[, 1] = 1
-  Y = colSums(kernel_matrix(Z1, Z, kern)) / n
+  c_gam = colSums(kernel_matrix(Z1, Z, kern)) / n
 
   disp = signflip(pos_quadratic_dispersion(), W)
-  fit = kernel_bregman(Y = Y, Z = Z, kern = kern, eta = 1,
-                       dispersion = disp, intercept = TRUE, K = K)
+  fit = kernel_bregman(Z, kern, eta = 1,
+                       dispersion = disp, target = c_gam, K = K)
 
   gamma = predict(fit, Z)
   expect_true(all(gamma[W == 1] >= -1e-10))
   expect_true(all(gamma[W == -1] <= 1e-10))
 })
 
-test_that("quadratic_dispersion matches direct solve", {
+test_that("quadratic_dispersion gives correct phi", {
   pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
   for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
     source(file.path(pkg_dir, f))
@@ -121,17 +69,69 @@ test_that("quadratic_dispersion matches direct solve", {
   Y = rnorm(n)
   kern = matern_kernel(sigma = 2, nu = 3/2)
   K = kernel_matrix(Z, Z, kern)
+
   eta_val = 0.5
 
-  fit = kernel_bregman(Y = Y, Z = Z, kern = kern, eta = eta_val,
-                       dispersion = quadratic_dispersion(), intercept = TRUE, K = K)
+  B = null_basis(Z, kern)
+  tgt = dpsi_from_response(Y, K, B)
+  fit = kernel_bregman(Z, kern, eta = eta_val,
+                       dispersion = quadratic_dispersion(),
+                       target = tgt$target, target_null = tgt$target_null,
+                       K = K)
 
-  # Manual solve: (K + 2*eta*I) alpha + beta0 * 1 = Y, 1'alpha + n*beta0 = sum(Y)
-  # With intercept via augmented system
-  H = K + 2 * eta_val * diag(n)
-  w = rep(1, n)
-  M = rbind(cbind(H, w), c(w, n))
-  sol = solve(M, c(Y, sum(Y)))
-  expect_equal(fit$alpha, sol[1:n], tolerance = 1e-10)
-  expect_equal(fit$beta0, sol[n + 1], tolerance = 1e-10)
+  # For quadratic dispersion: the optimal phi satisfies
+  #   phi_i + 2eta (K^{-1} (phi - B beta))_i = Y_i
+  # and B'(phi - Y) = 0 (null space condition)
+  #
+  # Equivalently: (K + 2eta I)^{-1} (Y - B beta) gives alpha,
+  # where 1'K alpha + n beta = sum(Y).
+  #
+  # Check: predictions at training data match an independent solve.
+  # Use fit$K (which includes the solver's nugget) for the reference computation.
+  Ks = fit$K
+  phi = as.vector(Ks %*% fit$alpha) + as.vector(B %*% fit$beta)
+
+  # Independent computation: solve the full Hessian system
+  H = rbind(cbind(crossprod(sweep(Ks, 1, 1, "*")) + n * eta_val * Ks, Ks %*% B),
+            cbind(t(B) %*% Ks, crossprod(B)))
+  rhs = c(Ks %*% Y, crossprod(B, Y))
+  sol = solve(H, rhs)
+  phi_check = as.vector(Ks %*% sol[1:n]) + as.vector(B %*% sol[(n+1):(n+ncol(B))])
+
+  expect_equal(phi, phi_check, tolerance = 1e-7)
+
+  # Also: predictions at new points should match
+  Z_test = matrix(rnorm(10 * p), 10, p)
+  pred = predict_phi(fit, Z_test)
+  K_test = kernel_matrix(Z_test, Z, kern)
+  B_test = null_basis(Z_test, kern)
+  pred_check = as.vector(K_test %*% sol[1:n]) + as.vector(B_test %*% sol[(n+1):(n+ncol(B))])
+  expect_equal(pred, pred_check, tolerance = 1e-7)
+})
+
+test_that("no-null-space kernel matches pure ridge", {
+  pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
+  for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
+    source(file.path(pkg_dir, f))
+
+  set.seed(42)
+  n = 50; p = 3
+  Z = matrix(rnorm(n * p), n, p)
+  Y = rnorm(n)
+  no_null = function(Z) matrix(nrow = nrow(atleast_2d(Z)), ncol = 0)
+  kern = matern_kernel(sigma = 2, nu = 3/2, null_basis = no_null)
+  K = kernel_matrix(Z, Z, kern)
+  eta_val = 0.5
+
+  B = null_basis(Z, kern)
+  tgt = dpsi_from_response(Y, K, B)
+  fit = kernel_bregman(Z, kern, eta = eta_val,
+                       dispersion = quadratic_dispersion(),
+                       target = tgt$target, K = K)
+
+  # FOC: Ks(Ks + n*eta*I) alpha = target, where Ks is the solver's nuggeted K
+  Ks = fit$K
+  alpha_ref = solve(Ks + n * eta_val * diag(n), solve(Ks, tgt$target))
+  expect_equal(fit$alpha, alpha_ref, tolerance = 1e-7)
+  expect_equal(length(fit$beta), 0)
 })

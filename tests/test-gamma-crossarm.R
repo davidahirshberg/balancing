@@ -21,6 +21,8 @@ ref_K.matern = function(z, zp, sigma = 5, nu = 3/2) {
   (1 + d) * exp(-d)
 }
 
+no_null = function(Z) matrix(nrow = nrow(atleast_2d(Z)), ncol = 0)
+
 set.seed(42)
 n = 20
 p = 2
@@ -28,7 +30,9 @@ X = matrix(rnorm(n * p), n, p)
 A = rbinom(n, 1, 0.5)
 Z = cbind(A, X)
 
-sigma_ref = 1; eta = sigma_ref^2 / 2
+sigma_ref = 1
+# Paper-scale eta: solver ridge = n*eta*I, reference = sigma^2*I → eta = sigma^2/n
+eta_from_sigma = function(sigma, n) sigma^2 / n
 arm = 1
 Za = Z; Za[, 1] = arm
 r_u = rnorm(n)
@@ -40,7 +44,7 @@ ref_Kfun = function(wx, wxp) {
   wp = wxp[, 1];  xp = wxp[, niw, drop = FALSE]
   ifelse(w == wp, ref_Kfun.x(x, xp), 0)
 }
-our_kern_x = matern_kernel(sigma = 5, nu = 3/2)
+our_kern_x = matern_kernel(sigma = 5, nu = 3/2, null_basis = no_null)
 
 # ============================================================
 # Test 1: Single arm only (all subjects have A=arm)
@@ -63,9 +67,13 @@ gamma_ref = solve(K_ref + sigma_ref^2 * diag(n_arm), h_K)
 # Pooled with single timestep u=1
 Z_pool = cbind(u = 1, Z_arm)
 our_kern_pooled = product_kernel(our_kern_x, iw = c(1, 2))
-our_fit = kernel_bregman(r_arm, Z_pool, our_kern_pooled,
-                          eta = eta, dispersion = quadratic_dispersion(),
-                          intercept = FALSE)
+K_pool = kernel_matrix(Z_pool, Z_pool, our_kern_pooled)
+B_pool = null_basis(Z_pool, our_kern_pooled)
+tgt = dpsi_from_response(r_arm, K_pool, B_pool)
+our_fit = kernel_bregman(Z_pool, our_kern_pooled,
+                          eta = eta_from_sigma(sigma_ref, nrow(Z_pool)),
+                          dispersion = quadratic_dispersion(),
+                          target = tgt$target, K = K_pool)
 gamma_ours = predict.kernel_bregman(our_fit, Z_pool)
 
 # Check K*Y = h_K within this single arm
@@ -92,9 +100,14 @@ gamma_ref_obs = solve(K_full + sigma_ref^2 * diag(n), h_K_full)
 
 # Our kernel regression
 Z_pool_full = cbind(u = 1, Z)
-our_fit_full = kernel_bregman(r_u, Z_pool_full, our_kern_pooled,
-                               eta = eta, dispersion = quadratic_dispersion(),
-                               intercept = FALSE)
+K_pool_full = kernel_matrix(Z_pool_full, Z_pool_full, our_kern_pooled)
+
+B_pool_full = null_basis(Z_pool_full, our_kern_pooled)
+tgt_full = dpsi_from_response(r_u, K_pool_full, B_pool_full)
+our_fit_full = kernel_bregman(Z_pool_full, our_kern_pooled,
+                               eta = eta_from_sigma(sigma_ref, nrow(Z_pool_full)),
+                               dispersion = quadratic_dispersion(),
+                               target = tgt_full$target, K = K_pool_full)
 gamma_ours_full = predict.kernel_bregman(our_fit_full, Z_pool_full)
 
 # Check K*Y = h_K

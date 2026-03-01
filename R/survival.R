@@ -237,22 +237,24 @@ compensator_discrete = function(lam_bound, gam_bound, T_obs, D, mesh,
 #' Stack a list of kernel matrices for batched BLAS multiplies.
 .stack_K_list = function(K_list) do.call(rbind, K_list)
 
-#' Build haz_fn from (alpha, beta0) + precomputed stacked kernel matrices.
+#' Build haz_fn from (alpha, beta) + precomputed stacked kernel matrices.
 #' One BLAS multiply for all Q+1 grid points. Returns haz_fn(k) compatible
 #' with estimand$psi / estimand$dot_psi.
 #'
 #' @param alpha Kernel coefficients.
-#' @param beta0 Intercept.
+#' @param beta Null-space coefficients (d-vector).
 #' @param K_list List of Q+1 kernel matrices (n_eval x n_centers).
+#' @param B_stacked Stacked null-space basis matrices (n_eval*(Q+1) x d).
 #' @param du_bin Training mesh bin width (for hazard conversion).
 #' @param dispersion Dispersion object (dchis maps phi -> hazard increment).
 #' @param K_stacked Pre-stacked matrices (optional, computed if NULL).
 #' @return List with haz_fn(k) and du = du_comp.
-make_haz_fn_alpha = function(alpha, beta0, K_list, du_comp, du_bin,
+make_haz_fn_alpha = function(alpha, beta, K_list, B_stacked, du_comp, du_bin,
                              dispersion, K_stacked = NULL) {
   if (is.null(K_stacked)) K_stacked = .stack_K_list(K_list)
   n = nrow(K_list[[1]]); Q1 = length(K_list)
-  phi_all = as.vector(K_stacked %*% alpha) + beta0
+  phi_all = as.vector(K_stacked %*% alpha)
+  if (length(beta) > 0) phi_all = phi_all + as.vector(B_stacked %*% beta)
   haz_mat = matrix(pmax(dispersion$dchis(phi_all) / du_bin, 0), nrow = n, ncol = Q1)
   list(haz_fn = function(k) haz_mat[, k], du = du_comp)
 }
@@ -312,21 +314,33 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
   K_stacked_surv0 = .stack_K_list(K_lam_surv0)
   K_stacked_obs = .stack_K_list(K_lam_obs)
 
+  # Lambda null-space basis at prediction points (same for all grid points —
+  # null_basis depends on covariates, not time, for product kernels).
+  B_surv1 = null_basis(cbind(0, Z1), kern)  # time value irrelevant for null basis
+  B_surv0 = null_basis(cbind(0, Z0), kern)
+  B_obs = null_basis(cbind(0, eval_Z), kern)
+  B_stacked_surv1 = do.call(rbind, rep(list(B_surv1), Q_comp + 1))
+  B_stacked_surv0 = do.call(rbind, rep(list(B_surv0), Q_comp + 1))
+  B_stacked_obs = do.call(rbind, rep(list(B_obs), Q_comp + 1))
+
   # === Gamma precomputation ===
   Z_pool_gam = gam_fit$Z
   T_eff = pmin(T_obs, horizon)
 
-  # Gamma prediction kernel matrices at compensator grid
-  K_pred_list = list(); at_risk_list = list(); W_ar_list = list()
+  # Gamma prediction kernel matrices and null-space bases at compensator grid
+  K_pred_list = list(); B_pred_list = list()
+  at_risk_list = list(); W_ar_list = list()
   for (k in 0:Q_comp) {
     u = comp_grid[k + 1]
     ar = which(T_eff >= u)
     at_risk_list[[k + 1]] = ar
     if (length(ar) == 0) {
-      K_pred_list[[k + 1]] = NULL; W_ar_list[[k + 1]] = NULL; next
+      K_pred_list[[k + 1]] = NULL; B_pred_list[[k + 1]] = NULL
+      W_ar_list[[k + 1]] = NULL; next
     }
     z_aug = cbind(u, eval_Z[ar, , drop = FALSE])
     K_pred_list[[k + 1]] = kernel_matrix(z_aug, Z_pool_gam, kern)
+    B_pred_list[[k + 1]] = null_basis(z_aug, kern)
     W_ar_list[[k + 1]] = W_eval[ar]
   }
 
@@ -335,9 +349,10 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
   if (length(event_idx) > 0) {
     z_ev = cbind(T_obs[event_idx], eval_Z[event_idx, , drop = FALSE])
     K_pred_dirac = kernel_matrix(z_ev, Z_pool_gam, kern)
+    B_pred_dirac = null_basis(z_ev, kern)
     W_dirac = W_eval[event_idx]
   } else {
-    K_pred_dirac = NULL; W_dirac = NULL
+    K_pred_dirac = NULL; B_pred_dirac = NULL; W_dirac = NULL
   }
 
   # === Training data for onestep refits ===
@@ -358,11 +373,15 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
     K_lam_surv1 = K_lam_surv1, K_stacked_surv1 = K_stacked_surv1,
     K_lam_surv0 = K_lam_surv0, K_stacked_surv0 = K_stacked_surv0,
     K_lam_obs = K_lam_obs, K_stacked_obs = K_stacked_obs,
+    B_stacked_surv1 = B_stacked_surv1, B_stacked_surv0 = B_stacked_surv0,
+    B_stacked_obs = B_stacked_obs,
     # Lambda training
     Y_pool_lam = Y_pool_lam, i_pool_lam = i_pool_lam,
     # Gamma prediction
-    K_pred_list = K_pred_list, at_risk_list = at_risk_list, W_ar_list = W_ar_list,
-    K_pred_dirac = K_pred_dirac, W_dirac = W_dirac, event_idx = event_idx,
+    K_pred_list = K_pred_list, B_pred_list = B_pred_list,
+    at_risk_list = at_risk_list, W_ar_list = W_ar_list,
+    K_pred_dirac = K_pred_dirac, B_pred_dirac = B_pred_dirac,
+    W_dirac = W_dirac, event_idx = event_idx,
     # Gamma training
     i_pool_gam = i_pool_gam, gam_mesh_u = gam_mesh_u,
     gam_mesh_col = gam_mesh_col, W_pool_gam = W_pool_gam,
@@ -378,14 +397,14 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
 #' Rectangle rule (comp_grid spacing is fine enough).
 #'
 #' @param gam_alpha Gamma kernel coefficients (from onestep_bregman).
-#' @param gam_beta0 Gamma intercept.
+#' @param gam_beta Gamma null-space coefficients (d-vector).
 #' @param direct Per-subject direct term (from bootstrap lambda).
 #' @param precomp Precomputed structure from precompute_boot_surv.
 #' @param lam_vals List of at-risk lambda values at each grid point
 #'   (lam_vals[[k]][j] = hazard for at-risk subject j at grid point k).
 #' @param gam_dispersion Base dispersion for gamma (before sign-flip).
 #' @return List with terms (DR estimate per subject) and noise_var.
-dr_from_alpha = function(gam_alpha, gam_beta0, direct, precomp,
+dr_from_alpha = function(gam_alpha, gam_beta, direct, precomp,
                          lam_vals, gam_dispersion) {
   n = precomp$n_eval
   du = precomp$du_comp
@@ -395,7 +414,9 @@ dr_from_alpha = function(gam_alpha, gam_beta0, direct, precomp,
   for (k in seq_along(precomp$K_pred_list)) {
     ar = precomp$at_risk_list[[k]]
     if (length(ar) == 0) next
-    phi_k = as.vector(precomp$K_pred_list[[k]] %*% gam_alpha) + gam_beta0
+    phi_k = as.vector(precomp$K_pred_list[[k]] %*% gam_alpha)
+    B_k = precomp$B_pred_list[[k]]
+    if (!is.null(B_k) && length(gam_beta) > 0) phi_k = phi_k + as.vector(B_k %*% gam_beta)
     W_k = precomp$W_ar_list[[k]]
     if (!is.null(W_k)) {
       gamma_k = W_k * gam_dispersion$dchis(W_k * phi_k)
@@ -408,7 +429,9 @@ dr_from_alpha = function(gam_alpha, gam_beta0, direct, precomp,
 
   dirac = rep(0, n)
   if (length(precomp$event_idx) > 0) {
-    phi_ev = as.vector(precomp$K_pred_dirac %*% gam_alpha) + gam_beta0
+    phi_ev = as.vector(precomp$K_pred_dirac %*% gam_alpha)
+    if (!is.null(precomp$B_pred_dirac) && length(gam_beta) > 0)
+      phi_ev = phi_ev + as.vector(precomp$B_pred_dirac %*% gam_beta)
     W_ev = precomp$W_dirac
     if (!is.null(W_ev)) {
       dirac[precomp$event_idx] = W_ev * gam_dispersion$dchis(W_ev * phi_ev)

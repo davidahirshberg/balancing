@@ -90,9 +90,8 @@ Y_gam = r_u
 our_kern_pooled = product_kernel(our_kern_x, iw = c(1, 2))  # group on (u, W)
 
 our_fit = kernel_bregman(Y_gam, Z_pool, our_kern_pooled,
-                          eta = eta_ours,
-                          dispersion = quadratic_dispersion(),
-                          intercept = FALSE)
+                          n_eta = eta_ours,
+                          dispersion = quadratic_dispersion())
 
 # Gamma values at training points = predict at same points
 our_gamma = predict.kernel_bregman(our_fit, Z_pool)

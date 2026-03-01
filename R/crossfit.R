@@ -49,17 +49,24 @@ crossfit_single = function(Y, W, X, kern, estimand, dispersion,
     Z_sel = Z[sel_idx, , drop = FALSE]
     Z_eval = Z[eval_idx, , drop = FALSE]
 
-    # Fit outcome at each eta
+    # Pre-compute kernel matrix and targets (shared across eta grid)
     K_fit = kernel_matrix(Z_fit, Z_fit, kern)
+    B_fit = null_basis(Z_fit, kern)
+    tgt_fit = dpsi_from_response(Y_fit, K_fit, B_fit)
+
+    # Fit outcome model at each eta
     models = vector("list", length(eta_grid))
-    mu1_sel = matrix(0, sum(sel_idx), length(eta_grid))
-    mu0_sel = matrix(0, sum(sel_idx), length(eta_grid))
+    mu1_sel = array(0, c(sum(sel_idx), length(eta_grid)))
+    mu0_sel = array(0, c(sum(sel_idx), length(eta_grid)))
 
     Z1_sel = Z_sel; Z1_sel[, 1] = 1
     Z0_sel = Z_sel; Z0_sel[, 1] = 0
 
     for (j in seq_along(eta_grid)) {
-      models[[j]] = kernel_bregman(Y_fit, Z_fit, kern, eta_grid[j], dispersion, K = K_fit)
+      models[[j]] = kernel_bregman(Z_fit, kern, eta_grid[j], dispersion,
+                                    target = tgt_fit$target,
+                                    target_null = tgt_fit$target_null,
+                                    K = K_fit)
       mu1_sel[, j] = predict(models[[j]], Z1_sel)
       mu0_sel[, j] = predict(models[[j]], Z0_sel)
     }
@@ -72,8 +79,13 @@ crossfit_single = function(Y, W, X, kern, estimand, dispersion,
       dir_se[j] = estimand$se(mu1_sel[, j], mu0_sel[, j], sum(sel_idx))
     }
 
-    # Select eta
-    sel = tuning_outcome$select(dir_val, dir_se, eta_grid, n = sum(sel_idx))
+    # Select eta via tuning context (lazy: each strategy pulls what it needs)
+    ctx = tuning_context(eta_grid, n = sum(sel_idx),
+      dir_val = function() dir_val,
+      dir_se = function() dir_se,
+      loo_scores = function() vapply(models, loo_loss, numeric(1)),
+      models = function() models)
+    sel = tuning_outcome$select(ctx)
     selected_eta[ff] = sel$eta
     model_sel = models[[sel$idx]]
 

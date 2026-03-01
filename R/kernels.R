@@ -1,6 +1,9 @@
-## Kernel infrastructure
-## Constructors return closure-lists with type/sigma/nu attributes.
-## kernel_matrix dispatches on type for fast BLAS paths.
+## Kernel infrastructure.
+##
+## A kernel defines a seminorm rho on an RKHS: the reproducing kernel k(z,z')
+## and a basis for ker(rho) (the unpenalized null space). Constructors return
+## closure-lists with type/sigma/nu attributes. kernel_matrix dispatches on
+## type for fast BLAS paths.
 
 # ============================================================
 # Kernel constructors
@@ -8,7 +11,12 @@
 
 #' Matern kernel with lengthscale sigma and smoothness nu.
 #' Closed forms for nu = 1/2, 3/2, 5/2; general Bessel fallback.
-matern_kernel = function(sigma = 1, nu = 3/2) {
+#'
+#' @param null_basis Function Z -> matrix(n, d) evaluating the null-space basis
+#'   of the seminorm at arbitrary points. Default: constant functions (intercept).
+#'   For no null space: function(Z) matrix(nrow = nrow(Z), ncol = 0).
+matern_kernel = function(sigma = 1, nu = 3/2,
+                         null_basis = function(Z) matrix(1, nrow(atleast_2d(Z)), 1)) {
   pointwise = function(z, zp) {
     z = atleast_2d(z)
     d2 = colSums((t(z) - c(zp))^2)
@@ -19,24 +27,54 @@ matern_kernel = function(sigma = 1, nu = 3/2) {
     if (nu == 5/2) return((1 + r + r^2 / 3) * exp(-r))
     ifelse(r == 0, 1, (2^(1 - nu) / gamma(nu)) * r^nu * besselK(r, nu))
   }
-  structure(pointwise, class = "kernel", type = "matern", sigma = sigma, nu = nu)
+  structure(pointwise, class = "kernel", type = "matern", sigma = sigma, nu = nu,
+            null_basis = null_basis)
 }
 
 #' Gaussian (RBF) kernel with lengthscale sigma.
-gaussian_kernel = function(sigma = 1) {
+#' @param null_basis See matern_kernel.
+gaussian_kernel = function(sigma = 1,
+                           null_basis = function(Z) matrix(1, nrow(atleast_2d(Z)), 1)) {
   pointwise = function(z, zp) {
     z = atleast_2d(z)
     d2 = colSums((t(z) - c(zp))^2)
     exp(-d2 / (2 * sigma^2))
   }
-  structure(pointwise, class = "kernel", type = "gaussian", sigma = sigma)
+  structure(pointwise, class = "kernel", type = "gaussian", sigma = sigma,
+            null_basis = null_basis)
 }
 
 #' Direct product kernel: K_x(x,x') * 1{w=w'}.
 #' For binary treatment: zero similarity between treatment groups.
 #' Restricting to one arm gives K_x.
+#'
+#' Inherits null_basis from k_x, evaluated on the non-grouping columns.
 product_kernel = function(k_x, iw = 1) {
-  structure(list(k_x = k_x, iw = iw), class = c("product_kernel", "kernel"))
+  nb_base = attr(k_x, "null_basis")
+  nb = if (!is.null(nb_base)) {
+    function(Z) {
+      Z = atleast_2d(Z)
+      niw = setdiff(seq_len(ncol(Z)), iw)
+      nb_base(Z[, niw, drop = FALSE])
+    }
+  } else {
+    function(Z) matrix(1, nrow(atleast_2d(Z)), 1)
+  }
+  structure(list(k_x = k_x, iw = iw), class = c("product_kernel", "kernel"),
+            null_basis = nb)
+}
+
+# ============================================================
+# Null-space basis
+# ============================================================
+
+#' Evaluate the null-space basis of a kernel's seminorm at points Z.
+#' Returns matrix(n, d) where d = dim(ker rho). If the kernel has no
+#' null_basis attribute, defaults to constant functions (intercept).
+null_basis = function(Z, kern) {
+  Z = atleast_2d(Z)
+  nb = attr(kern, "null_basis")
+  if (is.null(nb)) matrix(1, nrow(Z), 1) else nb(Z)
 }
 
 # ============================================================

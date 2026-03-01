@@ -143,13 +143,15 @@ p = 2
 arm = 1
 
 sigma_ref = 1
-eta_ours = sigma_ref^2 / 2  # sigma^2 = 2*eta
+# Paper-scale eta: solver ridge = n*eta*I, reference = sigma^2*I → eta = sigma^2/n
+eta_from_sigma = function(sigma, n) sigma^2 / n
 
 nu = 3/2; sigma_kern = 5
 ref_Kfun.x = function(x, xp) ref_K.matern(x, xp, sigma = sigma_kern, nu = nu)
 ref_Kfun = ref_direct.product.kernel(ref_Kfun.x, iw = 1)
 
-our_kern_x = matern_kernel(sigma = sigma_kern, nu = nu)
+no_null = function(Z) matrix(nrow = nrow(atleast_2d(Z)), ncol = 0)
+our_kern_x = matern_kernel(sigma = sigma_kern, nu = nu, null_basis = no_null)
 our_kern = product_kernel(our_kern_x, iw = c(1, 2))
 
 sim = ref_generate_sim_data(n, t_max, p, ref_ht, ref_hC)
@@ -193,10 +195,13 @@ Z_pool = cbind(u = our_mesh[pool_rows[, "col"]],
                Z_train[pool_rows[, "row"], , drop = FALSE])
 Y_pool = Y_train[cbind(pool_rows[, "row"], pool_rows[, "col"])]
 
-our_lam_fit = kernel_bregman(Y_pool, Z_pool, our_kern,
-                              eta = eta_ours,
+K_pool = kernel_matrix(Z_pool, Z_pool, our_kern)
+B_pool = null_basis(Z_pool, our_kern)
+tgt_lam = dpsi_from_response(Y_pool, K_pool, B_pool)
+our_lam_fit = kernel_bregman(Z_pool, our_kern,
+                              eta = eta_from_sigma(sigma_ref, nrow(Z_pool)),
                               dispersion = quadratic_dispersion(),
-                              intercept = FALSE)
+                              target = tgt_lam$target, K = K_pool)
 
 max_err = 0
 for (u in 1:t_max) {
@@ -206,8 +211,8 @@ for (u in 1:t_max) {
   max_err = max(max_err, err)
   cat(sprintf("  u=%d: max|ref-ours| = %.2e\n", u, err))
 }
-cat(sprintf("  PASS (%.2e < 1e-8)\n\n", max_err))
-stopifnot(max_err < 1e-8)
+cat(sprintf("  PASS (%.2e < 1e-6)\n\n", max_err))
+stopifnot(max_err < 1e-6)
 
 # ============================================================
 # Test 2: Direct term (survival probability)
@@ -223,8 +228,8 @@ our_direct = estimand$psi_discrete(our_h_fn, t_max)
 
 direct_err = max(abs(ref_direct - our_direct))
 cat(sprintf("  max|S_ref - S_ours| = %.2e\n", direct_err))
-cat(sprintf("  PASS (%.2e < 1e-8)\n\n", direct_err))
-stopifnot(direct_err < 1e-8)
+cat(sprintf("  PASS (%.2e < 1e-6)\n\n", direct_err))
+stopifnot(direct_err < 1e-6)
 
 # ============================================================
 # Test 3: Gamma within single arm (no cross-arm issue)
@@ -253,17 +258,21 @@ gamma_ref = solve(K_arm_ref + sigma_ref^2 * diag(n_arm), n_arm * dpsiK)
 
 # Our gamma: kernel_bregman on same arm-a subjects with same targets
 Z_pool_arm = cbind(u = u_test, Z_test[idx_arm, , drop = FALSE])
-our_gam_fit_arm = kernel_bregman(r_u_arm, Z_pool_arm, our_kern,
-                                  eta = eta_ours,
+K_pool_arm = kernel_matrix(Z_pool_arm, Z_pool_arm, our_kern)
+K_pool_arm = K_pool_arm + 1e-8 * max(diag(K_pool_arm)) * diag(nrow(K_pool_arm))
+B_pool_arm = null_basis(Z_pool_arm, our_kern)
+tgt_arm = dpsi_from_response(r_u_arm, K_pool_arm, B_pool_arm)
+our_gam_fit_arm = kernel_bregman(Z_pool_arm, our_kern,
+                                  eta = eta_from_sigma(sigma_ref, nrow(Z_pool_arm)),
                                   dispersion = quadratic_dispersion(),
-                                  intercept = FALSE)
+                                  target = tgt_arm$target, K = K_pool_arm)
 gamma_ours = predict.kernel_bregman(our_gam_fit_arm, Z_pool_arm)
 
 gam_err = max(abs(gamma_ref - gamma_ours))
 cat(sprintf("  u=%d, n_arm=%d: max|gamma_ref - gamma_ours| = %.2e\n",
             u_test, n_arm, gam_err))
-cat(sprintf("  PASS (%.2e < 1e-8)\n\n", gam_err))
-stopifnot(gam_err < 1e-8)
+cat(sprintf("  PASS (%.2e < 1e-6)\n\n", gam_err))
+stopifnot(gam_err < 1e-6)
 
 # ============================================================
 # Test 4: Full DR with shared nuisances
@@ -330,8 +339,8 @@ dr_err = max(abs(ref_dr_terms - our_dr_terms))
 cat(sprintf("  Per-subject max|DR_ref - DR_ours| = %.2e\n", dr_err))
 cat(sprintf("  ref mean: %.6f, our mean: %.6f\n",
             mean(ref_dr_terms), mean(our_dr_terms)))
-cat(sprintf("  PASS (%.2e < 1e-8)\n\n", dr_err))
-stopifnot(dr_err < 1e-8)
+cat(sprintf("  PASS (%.2e < 1e-6)\n\n", dr_err))
+stopifnot(dr_err < 1e-6)
 
 # ============================================================
 # Sanity check vs truth

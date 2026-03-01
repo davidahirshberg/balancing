@@ -1,13 +1,52 @@
 ## Tuning: pluggable regularization selection.
 ##
-## A tuning strategy provides $select(dir_val, dir_se, eta_grid),
-## which returns a list with $idx and $eta (the selected grid point).
+## A tuning strategy provides $select(ctx), where ctx is a tuning context
+## with lazy accessors for different selection criteria. Each accessor
+## computes and caches its result on first call — strategies only pay for
+## what they use.
 ##
-## Or it's a bare number / function, coerced by as_tuning().
+## Context accessors:
+##   ctx$eta_grid    — the regularization grid (always available)
+##   ctx$n           — sample size (always available)
+##   ctx$dir_val()   — plug-in functional at each grid point
+##   ctx$dir_se()    — SE of plug-in functional
+##   ctx$loo_scores() — LOO CV loss at each grid point
+##   ctx$models()    — list of fitted models (if available)
 ##
-## The pipeline computes dir_val[j] = plug-in functional at eta_grid[j]
-## and dir_se[j] = its standard error, then hands these to the tuning
-## strategy. The strategy knows nothing about survival vs single-outcome.
+## Or the tuning argument is a bare number / function, coerced by as_tuning().
+
+# ============================================================
+# Tuning context: lazy-cached bag of closures
+# ============================================================
+
+#' Build a tuning context from lazy computation closures.
+#'
+#' @param eta_grid The regularization grid.
+#' @param n Sample size.
+#' @param ... Named closures (zero-argument functions) for lazy computation.
+#'   Common: dir_val, dir_se, loo_scores, models.
+#' @return A tuning context object.
+tuning_context = function(eta_grid, n, ...) {
+  closures = list(...)
+  cache = new.env(parent = emptyenv())
+
+  ctx = list(eta_grid = eta_grid, n = n)
+
+  # Build a lazy accessor for each closure
+  for (nm in names(closures)) {
+    fn = closures[[nm]]
+    local({
+      name = nm
+      compute = fn
+      ctx[[name]] <<- function() {
+        if (!exists(name, envir = cache)) cache[[name]] = compute()
+        cache[[name]]
+      }
+    })
+  }
+
+  ctx
+}
 
 # ============================================================
 # Coerce number/function to tuning strategy
@@ -30,9 +69,9 @@ fixed_tuning = function(eta) {
     name = "fixed",
     eta = eta,
     needs_grid = FALSE,
-    select = function(dir_val, dir_se, eta_grid, ...) {
-      idx = which.min(abs(eta_grid - eta))
-      list(eta = eta_grid[idx], idx = idx)
+    select = function(ctx) {
+      idx = which.min(abs(ctx$eta_grid - eta))
+      list(eta = ctx$eta_grid[idx], idx = idx)
     }
   )
 }
@@ -43,10 +82,10 @@ rule_tuning = function(fn) {
     name = "rule",
     fn = fn,
     needs_grid = FALSE,
-    select = function(dir_val, dir_se, eta_grid, n = NULL, ...) {
-      eta = fn(n, ...)
-      idx = which.min(abs(eta_grid - eta))
-      list(eta = eta_grid[idx], idx = idx)
+    select = function(ctx) {
+      eta = fn(ctx$n)
+      idx = which.min(abs(ctx$eta_grid - eta))
+      list(eta = ctx$eta_grid[idx], idx = idx)
     }
   )
 }
@@ -68,8 +107,11 @@ lepski_tuning = function(C = 3) {
     name = "lepski",
     C = C,
     needs_grid = TRUE,
-    select = function(dir_val, dir_se, eta_grid, ...) {
-      m = length(eta_grid)
+    select = function(ctx) {
+      dir_val = ctx$dir_val()
+      dir_se = ctx$dir_se()
+      m = length(ctx$eta_grid)
+      if (m <= 1) return(list(eta = ctx$eta_grid[1], idx = 1L))
 
       # Lepski: largest admissible eta
       selected = 1
@@ -85,7 +127,7 @@ lepski_tuning = function(C = 3) {
         if (admissible) selected = j
       }
 
-      list(eta = eta_grid[selected], idx = selected)
+      list(eta = ctx$eta_grid[selected], idx = selected)
     }
   )
 }
@@ -101,57 +143,31 @@ oracle_tuning = function(truth) {
     name = "oracle",
     truth = truth,
     needs_grid = TRUE,
-    select = function(dir_val, dir_se, eta_grid, ...) {
+    select = function(ctx) {
+      dir_val = ctx$dir_val()
       ok = !is.na(dir_val)
       selected = which(ok)[which.min(abs(dir_val[ok] - truth))]
-      list(eta = eta_grid[selected], idx = selected)
+      list(eta = ctx$eta_grid[selected], idx = selected)
     }
   )
 }
 
 # ============================================================
-# CV: cross-validated loss (works differently — needs raw data)
+# CV: cross-validated loss on the dual objective
 # ============================================================
 
-#' CV tuning: select eta minimizing cross-validated prediction loss.
-#' Uses the dispersion's loss (chis(phi) - Y*phi) as the CV criterion.
+#' CV tuning: select eta minimizing LOO cross-validated dual loss.
 #'
-#' Unlike other strategies, CV needs raw data to refit on sub-folds.
-#' The pipeline calls $select_from_data when tuning$name == "cv".
-cv_tuning = function(folds = 5) {
+#' Works for any model (lambda or gamma) because LOO is computed
+#' from the solver's own objective via the FOC, not from a response Y.
+cv_tuning = function() {
   list(
     name = "cv",
-    folds = folds,
     needs_grid = TRUE,
-    # Standard select interface — falls back to this if dir_val is provided
-    select = function(dir_val, dir_se, eta_grid) {
-      stop("CV tuning requires select_from_data, not select")
-    },
-    select_from_data = function(Y, Z, kern, eta_grid, dispersion,
-                                intercept = TRUE, w = NULL) {
-      n = length(Y)
-      fold_id = sample(rep(1:folds, length.out = n))
-      m = length(eta_grid)
-      cv_loss = numeric(m)
-
-      for (j in 1:m) {
-        fold_losses = numeric(folds)
-        for (ff in 1:folds) {
-          train_idx = fold_id != ff
-          test_idx = fold_id == ff
-          fit = kernel_bregman(Y[train_idx], atleast_2d(Z)[train_idx, , drop = FALSE],
-                               kern, eta_grid[j], dispersion,
-                               intercept = intercept,
-                               w = if (!is.null(w)) w[train_idx] else NULL)
-          phi_test = predict_phi(fit, atleast_2d(Z)[test_idx, , drop = FALSE])
-          # Loss: chis(phi) - Y*phi
-          fold_losses[ff] = mean(dispersion$chis(phi_test) - Y[test_idx] * phi_test)
-        }
-        cv_loss[j] = mean(fold_losses)
-      }
-
-      selected = which.min(cv_loss)
-      list(eta = eta_grid[selected], idx = selected, cv_loss = cv_loss)
+    select = function(ctx) {
+      loo = ctx$loo_scores()
+      selected = which.min(loo)
+      list(eta = ctx$eta_grid[selected], idx = selected, cv_loss = loo)
     }
   )
 }
