@@ -99,6 +99,52 @@ pos_quadratic_dispersion = function() {
 }
 
 # ============================================================
+# Shifted dispersions (domain [1, infty))
+# ============================================================
+
+#' Shifted entropy: chi(gamma) = (gamma-1) log(gamma-1) - (gamma-1) + 1 on [1, infty).
+#' Conjugate chi*(phi) = phi + exp(phi). dchis = 1 + exp(phi), ddchis = exp(phi).
+#' Natural for: ATE/TSM inverse propensity weights (gamma = 1/pi >= 1).
+#' With sign-flip W = 2A-1: weights are 1+exp(phi) for treated, -(1+exp(-phi)) for control.
+shifted_entropy_dispersion = function() {
+  list(
+    name = "shifted_entropy",
+    linear = FALSE,
+    chi = function(g) ifelse(g >= 1, (g - 1) * log(g - 1) - (g - 1) + 1, Inf),
+    chis = function(phi) phi + exp(phi),
+    dchis = function(phi) 1 + exp(phi),
+    ddchis = function(phi) exp(phi),
+    resid = function(g, Y, w) w * (g - Y),
+    rhs = function(phi, g, Y, w) {
+      # g = 1 + exp(phi), ddchis = exp(phi)
+      ep = exp(phi)
+      w * ep * (phi - 1) + w * (Y - 1)
+    },
+    predict = function(phi) 1 + exp(phi)
+  )
+}
+
+#' Shifted positive-part quadratic: chi(gamma) = (gamma-1)^2/2 on [1, infty).
+#' Conjugate chi*(phi) = phi + max(phi, 0)^2/2. dchis = 1 + max(phi, 0), ddchis = I(phi > 0).
+#' Like shifted entropy but with quadratic tail behavior.
+shifted_pos_quadratic_dispersion = function() {
+  list(
+    name = "shifted_pos_quadratic",
+    linear = FALSE,
+    chi = function(g) ifelse(g >= 1, (g - 1)^2 / 2, Inf),
+    chis = function(phi) phi + pmax(phi, 0)^2 / 2,
+    dchis = function(phi) 1 + pmax(phi, 0),
+    ddchis = function(phi) as.numeric(phi > 0),
+    resid = function(g, Y, w) w * (g - Y),
+    rhs = function(phi, g, Y, w) {
+      active = phi > 0
+      ifelse(active, w * phi + w * (Y - 1), 0)
+    },
+    predict = function(phi) 1 + pmax(phi, 0)
+  )
+}
+
+# ============================================================
 # Sign-flip modifier
 # ============================================================
 
@@ -131,5 +177,135 @@ signflip = function(base, W) {
     predict = function(phi) W * base$dchis(W * phi),
     base = base,
     W = W
+  )
+}
+
+# ============================================================
+# Target-sign dispersions
+# ============================================================
+#
+# Standard sign-flip uses sigma = W = 2A-1 (sign from treatment).
+# These use sigma = sign(r) (sign from the target derivative).
+#
+# Why: entropy + sign-flip + per-level null space is infeasible when the
+# per-arm target has the wrong sign for the dispersion's range.  With
+# sigma = sign(r), the weight sign matches the target sign by construction,
+# so per-level null-space constraints are always feasible.
+#
+# The ATE subtraction must live in r (negate arm 0's derivative), not in W.
+
+#' Sign-from-target entropy: sigma_Z = sign(r_Z), shift s = 0.
+#'
+#' chi*_Z(phi) = exp(sigma phi) - 1
+#' gamma  = sigma exp(sigma phi):  sign(gamma) = sign(r),  |gamma| > 0
+#'
+#' Equivalent to signflip(entropy, sign(r)).  Per-level feasibility
+#' when sign(r) is constant within each level (always true for survival ATE).
+#'
+#' @param r  Per-observation target derivative (n-vector, nonzero).
+#'   For ATE survival: r < 0 at arm-1 points, r > 0 at arm-0 points
+#'   (ATE subtraction already in r).
+signflip_r = function(r) {
+  signflip(entropy_dispersion(), sign(r))
+}
+
+#' Target-scaled sign-flip entropy: sigma_Z = sign(r_Z), shift s_Z = |r_Z|.
+#'
+#' chi*_Z(phi)  = r phi + exp(sigma phi) - 1
+#' gamma        = r + sigma exp(sigma phi)
+#' |gamma|     >= |r|,  sign(gamma) = sign(r)
+#'
+#' The shift floors |gamma| at |r|: each weight is at least as large as the
+#' target it needs to recover.  The excess |gamma| - |r| = exp(sigma phi)
+#' is the adaptive entropy part.
+#'
+#' Per-level feasibility: guaranteed when sign(r) is constant within each
+#' level, because each arm's null-space target c_a = sum(r_i) has the same
+#' sign as the weights.
+#'
+#' @param r  Per-observation target derivative (n-vector, nonzero).
+target_scaled_entropy = function(r) {
+  sigma = sign(r)
+  abs_r = abs(r)
+  list(
+    name = "target_scaled_entropy",
+    linear = FALSE,
+    chi = function(g) {
+      # chi(gamma) = chi_{|r|}(sigma * gamma)  where chi_s is shifted entropy
+      # Domain: sigma*gamma > |r|, i.e., sign(gamma) = sigma and |gamma| > |r|
+      u = sigma * g - abs_r
+      ifelse(u > 0, u * log(u) - u + 1, Inf)
+    },
+    # chi*(phi) = r*phi + exp(sigma*phi) - 1
+    chis = function(phi) r * phi + exp(sigma * phi) - 1,
+    # gamma = r + sigma * exp(sigma*phi)
+    dchis = function(phi) r + sigma * exp(sigma * phi),
+    # curvature = exp(sigma*phi), same as sign-flipped entropy
+    ddchis = function(phi) exp(sigma * phi),
+    resid = function(g, Y, w) w * (g - Y),
+    rhs = function(phi, g, Y, w) {
+      # IRLS: ddchis * phi + (Y - g)
+      ep = exp(sigma * phi)
+      w * ep * phi + w * (Y - g)
+    },
+    predict = function(phi) r + sigma * exp(sigma * phi),
+    sigma = sigma,
+    r = r
+  )
+}
+
+#' Variance-weighted quadratic with sign-flip and target shift.
+#'
+#' chi_Z(gamma) = (v_Z / 2)(gamma - sigma_Z |r_Z|)^2
+#'   on sign(gamma) = sigma_Z, |gamma| >= |r_Z|
+#'
+#' where sigma_Z = sign(r_Z), v_Z = lambda_hat(Z)(1 - lambda_hat(Z)) 1(T >= U)
+#' is the conditional Bernoulli variance of Y_U.
+#'
+#' Conjugate:
+#'   chi*_Z(phi) = r_Z phi + (sigma_Z phi)_+^2 / (2 v_Z)
+#'   gamma       = r_Z + sigma_Z (sigma_Z phi)_+ / v_Z
+#'   ddchis      = 1{sigma_Z phi > 0} / v_Z
+#'
+#' The primal penalty P_hat[chi_Z(gamma)] = P_hat[v_Z (gamma - r)^2 / 2]
+#' equals the Bernoulli-variance term in the estimator's MSE, so eta
+#' directly controls the bias-variance exchange rate in the right units.
+#'
+#' Excess weight |gamma| - |r| = (sigma phi)_+ / v_Z: large when the RKHS
+#' says to upweight and the conditional variance is small (precise obs).
+#'
+#' @param r  Per-observation target derivative (n-vector, nonzero).
+#' @param v  Per-observation conditional variance (n-vector, positive).
+#'   Typically v_Z = lambda_hat(1 - lambda_hat) * at_risk.
+variance_weighted_quadratic = function(r, v) {
+  sigma = sign(r)
+  abs_r = abs(r)
+  list(
+    name = "variance_weighted_quadratic",
+    linear = FALSE,
+    chi = function(g) {
+      u = sigma * g - abs_r
+      ifelse(u >= 0, v / 2 * u^2, Inf)
+    },
+    # chi*(phi) = r phi + (sigma phi)_+^2 / (2v)
+    chis = function(phi) {
+      sp = pmax(sigma * phi, 0)
+      r * phi + sp^2 / (2 * v)
+    },
+    # gamma = r + sigma (sigma phi)_+ / v
+    dchis = function(phi) r + sigma * pmax(sigma * phi, 0) / v,
+    # curvature = 1{sigma phi > 0} / v
+    ddchis = function(phi) as.numeric(sigma * phi > 0) / v,
+    resid = function(g, Y, w) w * (g - Y),
+    rhs = function(phi, g, Y, w) {
+      # On active set (sigma phi > 0): ddchis*phi + (Y - g)
+      #   = phi/v + Y - r - phi/v = Y - r.  Clean cancellation.
+      active = sigma * phi > 0
+      ifelse(active, w * (Y - r), 0)
+    },
+    predict = function(phi) r + sigma * pmax(sigma * phi, 0) / v,
+    sigma = sigma,
+    r = r,
+    v = v
   )
 }

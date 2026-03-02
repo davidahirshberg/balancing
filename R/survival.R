@@ -35,7 +35,7 @@ build_training_mesh = function(T_obs, D, Z, horizon, M) {
 
 #' Pool training mesh into (Z_pool, Y_pool) for kernel regression.
 #' Extracts at-risk (u, Z) pairs and corresponding outcomes.
-pool_mesh = function(train) {
+at_risk_pairs = function(train) {
   rows = which(train$G == 1, arr.ind = TRUE)
   Z_pool = cbind(u = train$mesh[rows[, "col"]], train$Z[rows[, "row"], , drop = FALSE])
   Y_pool = train$Y[cbind(rows[, "row"], rows[, "col"])]
@@ -84,13 +84,11 @@ make_haz_fn = function(model, Z, horizon, Q, dispersion, lam_bound = NULL, du_bi
 #' @param horizon Maximum follow-up.
 #' @param Q Number of quadrature points (even).
 #' @param lam_dispersion Dispersion for lambda model.
-#' @param gam_dispersion Base dispersion for gamma model (before sign-flip).
+#' @param dchis_gamma Function(Z, phi) -> gamma. Z = (u, W, X) matrix.
 #' @param du_bin Bin width for hazard conversion.
-#' @param W_eval Per-subject sign vector (2*W - 1). If NULL, no sign-flip.
 #' @return List with comp (compensator values) and noise_var (int gamma^2 lambda du).
 compensator_simpson = function(lam_bound, gam_bound, T_obs, D, Z, horizon, Q,
-                               lam_dispersion, gam_dispersion, du_bin,
-                               W_eval = NULL) {
+                               lam_dispersion, dchis_gamma, du_bin) {
   n = length(T_obs)
   if (Q %% 2 != 0) Q = Q + 1
   h = horizon / Q
@@ -120,12 +118,8 @@ compensator_simpson = function(lam_bound, gam_bound, T_obs, D, Z, horizon, Q,
     lam_vals = pmax(lam_dispersion$dchis(lam_phi) / du_bin, 0)
 
     gam_phi = eval_phi(gam_bound, u, ar)
-    if (!is.null(W_eval)) {
-      W_ar = W_eval[ar]
-      gam_vals = W_ar * gam_dispersion$dchis(W_ar * gam_phi)
-    } else {
-      gam_vals = gam_dispersion$dchis(gam_phi)
-    }
+    Z_ar = cbind(u, Z[ar, , drop = FALSE])
+    gam_vals = dchis_gamma(Z_ar, gam_phi)
 
     # Per-person weight at this grid point
     w = rep(sw[k + 1], length(ar))
@@ -165,12 +159,8 @@ compensator_simpson = function(lam_bound, gam_bound, T_obs, D, Z, horizon, Q,
     lam_stub = pmax(lam_dispersion$dchis(lam_phi_stub) / du_bin, 0)
 
     gam_phi_stub = eval_phi_vec(gam_bound, T_eff[has_stub], has_stub)
-    if (!is.null(W_eval)) {
-      W_stub = W_eval[has_stub]
-      gam_stub = W_stub * gam_dispersion$dchis(W_stub * gam_phi_stub)
-    } else {
-      gam_stub = gam_dispersion$dchis(gam_phi_stub)
-    }
+    Z_stub = cbind(T_eff[has_stub], Z[has_stub, , drop = FALSE])
+    gam_stub = dchis_gamma(Z_stub, gam_phi_stub)
 
     comp[has_stub] = comp[has_stub] + gam_stub * lam_stub * frac[has_stub] / 2
     noise_var[has_stub] = noise_var[has_stub] + gam_stub^2 * lam_stub * frac[has_stub] / 2
@@ -194,12 +184,11 @@ compensator_simpson = function(lam_bound, gam_bound, T_obs, D, Z, horizon, Q,
 #' @param D Event indicators.
 #' @param mesh Training mesh midpoints (length M).
 #' @param lam_dispersion Dispersion for lambda model.
-#' @param gam_dispersion Base dispersion for gamma model (before sign-flip).
-#' @param W_eval Per-subject sign vector (2*W - 1). If NULL, no sign-flip.
+#' @param dchis_gamma Function(Z, phi) -> gamma. Z = (u, W, X) matrix.
+#' @param Z Covariate matrix (W, X) — no time column.
 #' @return List with comp (compensator values) and noise_var.
 compensator_discrete = function(lam_bound, gam_bound, T_obs, D, mesh,
-                                lam_dispersion, gam_dispersion,
-                                W_eval = NULL) {
+                                lam_dispersion, dchis_gamma, Z) {
   n = length(T_obs)
   M = length(mesh)
   comp = rep(0, n)
@@ -216,12 +205,8 @@ compensator_discrete = function(lam_bound, gam_bound, T_obs, D, mesh,
 
     # Gamma
     gam_phi = eval_phi(gam_bound, u, ar)
-    if (!is.null(W_eval)) {
-      W_ar = W_eval[ar]
-      gam_vals = W_ar * gam_dispersion$dchis(W_ar * gam_phi)
-    } else {
-      gam_vals = gam_dispersion$dchis(gam_phi)
-    }
+    Z_ar = cbind(u, Z[ar, , drop = FALSE])
+    gam_vals = dchis_gamma(Z_ar, gam_phi)
 
     comp[ar] = comp[ar] + gam_vals * h_vals
     noise_var[ar] = noise_var[ar] + gam_vals^2 * h_vals
@@ -274,13 +259,12 @@ make_haz_fn_alpha = function(alpha, beta, K_list, B_stacked, du_comp, du_bin,
 #' @param Q_comp Quadrature points for compensator.
 #' @param kern Kernel object (same for lambda and gamma).
 #' @param du_bin Training mesh bin width.
-#' @param W_eval Per-subject sign vector (2*W - 1).
 #' @param eval_train Training mesh for eval fold (for gamma pool mapping).
 #' @param lam_train Training mesh for lambda fold (for lambda pool mapping).
 #' @return Precomputed structure for bootstrap_surv_fold.
 precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
                                 horizon, Q_comp, kern, du_bin,
-                                W_eval, eval_train, lam_train) {
+                                eval_train, lam_train) {
   n_eval = nrow(atleast_2d(eval_Z))
   du_comp = horizon / Q_comp
   comp_grid = (0:Q_comp) * du_comp
@@ -316,7 +300,7 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
 
   # Lambda null-space basis at prediction points (same for all grid points —
   # null_basis depends on covariates, not time, for product kernels).
-  B_surv1 = null_basis(cbind(0, Z1), kern)  # time value irrelevant for null basis
+  B_surv1 = null_basis(cbind(0, Z1), kern)
   B_surv0 = null_basis(cbind(0, Z0), kern)
   B_obs = null_basis(cbind(0, eval_Z), kern)
   B_stacked_surv1 = do.call(rbind, rep(list(B_surv1), Q_comp + 1))
@@ -341,7 +325,7 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
     z_aug = cbind(u, eval_Z[ar, , drop = FALSE])
     K_pred_list[[k + 1]] = kernel_matrix(z_aug, Z_pool_gam, kern)
     B_pred_list[[k + 1]] = null_basis(z_aug, kern)
-    W_ar_list[[k + 1]] = W_eval[ar]
+    # Z at risk stored for dchis_gamma lookup (no longer need per-subject W)
   }
 
   # Dirac prediction at event times
@@ -350,7 +334,7 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
     z_ev = cbind(T_obs[event_idx], eval_Z[event_idx, , drop = FALSE])
     K_pred_dirac = kernel_matrix(z_ev, Z_pool_gam, kern)
     B_pred_dirac = null_basis(z_ev, kern)
-    W_dirac = W_eval[event_idx]
+    # (W_dirac removed: dchis_gamma handles sign internally)
   } else {
     K_pred_dirac = NULL; B_pred_dirac = NULL; W_dirac = NULL
   }
@@ -379,14 +363,15 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
     Y_pool_lam = Y_pool_lam, i_pool_lam = i_pool_lam,
     # Gamma prediction
     K_pred_list = K_pred_list, B_pred_list = B_pred_list,
-    at_risk_list = at_risk_list, W_ar_list = W_ar_list,
+    at_risk_list = at_risk_list,
     K_pred_dirac = K_pred_dirac, B_pred_dirac = B_pred_dirac,
-    W_dirac = W_dirac, event_idx = event_idx,
+    event_idx = event_idx,
     # Gamma training
     i_pool_gam = i_pool_gam, gam_mesh_u = gam_mesh_u,
     gam_mesh_col = gam_mesh_col, W_pool_gam = W_pool_gam,
     # Shared
-    n_eval = n_eval, du_bin = du_bin, du_comp = du_comp, comp_grid = comp_grid
+    n_eval = n_eval, Z = eval_Z, T_obs = T_obs,
+    du_bin = du_bin, du_comp = du_comp, comp_grid = comp_grid
   )
 }
 
@@ -402,12 +387,13 @@ precompute_boot_surv = function(lam_fit, gam_fit, eval_Z, T_obs, D,
 #' @param precomp Precomputed structure from precompute_boot_surv.
 #' @param lam_vals List of at-risk lambda values at each grid point
 #'   (lam_vals[[k]][j] = hazard for at-risk subject j at grid point k).
-#' @param gam_dispersion Base dispersion for gamma (before sign-flip).
+#' @param dchis_gamma Function(Z, phi) -> gamma. Z = (u, W, X) matrix.
 #' @return List with terms (DR estimate per subject) and noise_var.
 dr_from_alpha = function(gam_alpha, gam_beta, direct, precomp,
-                         lam_vals, gam_dispersion) {
+                         lam_vals, dchis_gamma) {
   n = precomp$n_eval
   du = precomp$du_comp
+  Z = precomp$Z
   compensator = rep(0, n)
   noise_var = rep(0, n)
 
@@ -417,12 +403,8 @@ dr_from_alpha = function(gam_alpha, gam_beta, direct, precomp,
     phi_k = as.vector(precomp$K_pred_list[[k]] %*% gam_alpha)
     B_k = precomp$B_pred_list[[k]]
     if (!is.null(B_k) && length(gam_beta) > 0) phi_k = phi_k + as.vector(B_k %*% gam_beta)
-    W_k = precomp$W_ar_list[[k]]
-    if (!is.null(W_k)) {
-      gamma_k = W_k * gam_dispersion$dchis(W_k * phi_k)
-    } else {
-      gamma_k = gam_dispersion$dchis(phi_k)
-    }
+    Z_ar = cbind(precomp$comp_grid[k], Z[ar, , drop = FALSE])
+    gamma_k = dchis_gamma(Z_ar, phi_k)
     compensator[ar] = compensator[ar] + gamma_k * lam_vals[[k]] * du
     noise_var[ar] = noise_var[ar] + gamma_k^2 * lam_vals[[k]] * du
   }
@@ -432,12 +414,9 @@ dr_from_alpha = function(gam_alpha, gam_beta, direct, precomp,
     phi_ev = as.vector(precomp$K_pred_dirac %*% gam_alpha)
     if (!is.null(precomp$B_pred_dirac) && length(gam_beta) > 0)
       phi_ev = phi_ev + as.vector(precomp$B_pred_dirac %*% gam_beta)
-    W_ev = precomp$W_dirac
-    if (!is.null(W_ev)) {
-      dirac[precomp$event_idx] = W_ev * gam_dispersion$dchis(W_ev * phi_ev)
-    } else {
-      dirac[precomp$event_idx] = gam_dispersion$dchis(phi_ev)
-    }
+    Z_ev = cbind(precomp$T_obs[precomp$event_idx],
+                 Z[precomp$event_idx, , drop = FALSE])
+    dirac[precomp$event_idx] = dchis_gamma(Z_ev, phi_ev)
   }
 
   terms = direct + dirac - compensator
