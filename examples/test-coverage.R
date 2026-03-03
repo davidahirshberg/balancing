@@ -218,6 +218,7 @@ one_rep = function(rep_id) {
 
   all_coverage = list()
   all_paths = list()
+  all_boot = list()
 
   # ==========================================================
   # External methods (no grid sweep, no bootstrap)
@@ -453,14 +454,14 @@ one_rep = function(rep_id) {
             prev_gamma_alpha[[ff]] = gamma_fit$alpha
             prev_gamma_beta[[ff]] = gamma_fit$beta
           }
-          # Sanity check: if chi*'s exponential argument (sigma*phi) is large positive,
-          # the solve is degenerate. Large |phi| in the *opposite* sign (phi < 0 for
-          # sigma=-1) is the safe saturated regime (mu ≈ target), not degenerate.
+          # Sanity check: gamma = dchis(phi) has non-finite values.
+          # phi is an implementation detail (not identifiable); only gamma matters.
           gamma_degenerate = any(sapply(1:n_folds, function(ff) {
             gf = gamma_fits[[ff]]
             phi = as.vector(gf$K %*% gf$alpha)
             if (ncol(gf$B) > 0) phi = phi + as.vector(gf$B %*% gf$beta)
-            max(gf$dispersion$sigma * phi) > 50
+            gamma_vals = .dchis(gf$dispersion, phi)
+            any(!is.finite(gamma_vals))
           }))
           if (gamma_degenerate) break
 
@@ -532,6 +533,9 @@ one_rep = function(rep_id) {
 
       # Build a coverage row from a dr_result + optional boot_result.
       coverage_row = function(result, label, s2_lam, s2_gam, boot = NULL) {
+        all_boot[[length(all_boot) + 1]] <<- list(
+          rep = rep_id, method = mname, estimand = en, tuning = label,
+          result = result, boot = boot)
         row = na_row(mname, en)
         row$est = result$est; row$bias = result$est - truth
         row$selected_sigma2_lam = s2_lam; row$selected_sigma2_gam = s2_gam
@@ -602,7 +606,8 @@ one_rep = function(rep_id) {
   }
 
   list(coverage = do.call(rbind, all_coverage),
-       paths = if (length(all_paths) > 0) do.call(rbind, all_paths) else NULL)
+       paths = if (length(all_paths) > 0) do.call(rbind, all_paths) else NULL,
+       boot = all_boot)
 }
 
 # ============================================================
@@ -628,6 +633,7 @@ if (n_workers > 1) {
 elapsed = (proc.time() - t0)[3]
 df = do.call(rbind, lapply(all_results, `[[`, "coverage"))
 all_paths = do.call(rbind, Filter(Negate(is.null), lapply(all_results, `[[`, "paths")))
+all_boot = do.call(c, lapply(all_results, `[[`, "boot"))
 
 cat(sprintf("\nDone in %.1f seconds (%.1f s/rep)\n\n", elapsed, elapsed / n_reps))
 
@@ -655,9 +661,10 @@ for (en in estimand_names) {
 }
 
 # Save
-out_file = sprintf("examples/coverage-results-%s-n%d-%s.rds",
-                   cell_name, n_obs, format(Sys.time(), "%Y%m%d-%H%M"))
-saveRDS(list(results = df, paths = all_paths,
+out_file = sprintf("examples/coverage-results-%s-n%d-%s-r%d-%d.rds",
+                   cell_name, n_obs, format(Sys.time(), "%Y%m%d-%H%M"),
+                   start_rep, start_rep + n_reps - 1)
+saveRDS(list(results = df, paths = all_paths, boot = all_boot,
              params = list(n_obs = n_obs, n_reps = n_reps,
                            boot_reps = boot_reps, truths = truths,
                            cell = cell, dgp_def = dgp_def)), out_file)
