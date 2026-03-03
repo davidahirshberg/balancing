@@ -44,23 +44,49 @@ gaussian_kernel = function(sigma = 1,
             null_basis = null_basis)
 }
 
-#' Direct product kernel: K_x(x,x') * 1{w=w'}.
-#' For binary treatment: zero similarity between treatment groups.
-#' Restricting to one arm gives K_x.
+#' Direct product of RKHS copies, one per grouping level.
 #'
-#' Inherits null_basis from k_x, evaluated on the non-grouping columns.
-product_kernel = function(k_x, iw = 1) {
+#' Takes a kernel k_x on X and returns the direct product space on W x X:
+#'   Kernel:   k((w,x),(w',x')) = k_x(x,x') * 1{w=w'}
+#'   Null space: one copy of ker(rho_x) per level — if ker(rho_x) = span{1},
+#'               then ker(rho) = span{1_{w=0}, 1_{w=1}}
+#'   Seminorm: rho(f)^2 = sum_g rho_x(f_g)^2
+#'
+#' @param k_x Base kernel on X.
+#' @param iw Column index(es) in Z that hold the grouping variable(s).
+#' @param levels The grouping levels (e.g. c(0, 1) for binary treatment).
+#'   Part of the space definition — not discovered from data.
+direct_product = function(k_x, iw = 1, levels = NULL) {
   nb_base = attr(k_x, "null_basis")
-  nb = if (!is.null(nb_base)) {
-    function(Z) {
-      Z = atleast_2d(Z)
-      niw = setdiff(seq_len(ncol(Z)), iw)
+  nb = function(Z) {
+    Z = atleast_2d(Z)
+    niw = setdiff(seq_len(ncol(Z)), iw)
+    B_base = if (!is.null(nb_base)) {
       nb_base(Z[, niw, drop = FALSE])
+    } else {
+      matrix(1, nrow(Z), 1)
     }
-  } else {
-    function(Z) matrix(1, nrow(atleast_2d(Z)), 1)
+    d_base = ncol(B_base)
+    if (length(iw) == 1) {
+      gv = Z[, iw]
+    } else {
+      gv = apply(Z[, iw, drop = FALSE], 1, paste, collapse = "_")
+    }
+    # Use stored levels if provided at construction, otherwise auto-detect.
+    # Stored levels eliminate threading; auto-detect is fallback for
+    # cases where levels depend on the data (e.g. discrete time mesh).
+    lvls = if (!is.null(levels)) levels else sort(unique(gv))
+    n = nrow(Z)
+    B = matrix(0, n, length(lvls) * d_base)
+    for (l in seq_along(lvls)) {
+      idx = which(gv == lvls[l])
+      cols = ((l - 1) * d_base + 1):(l * d_base)
+      B[idx, cols] = B_base[idx, ]
+    }
+    B
   }
-  structure(list(k_x = k_x, iw = iw), class = c("product_kernel", "kernel"),
+  structure(list(k_x = k_x, iw = iw, levels = levels),
+            class = c("product_kernel", "kernel"),
             null_basis = nb)
 }
 
@@ -74,7 +100,8 @@ product_kernel = function(k_x, iw = 1) {
 null_basis = function(Z, kern) {
   Z = atleast_2d(Z)
   nb = attr(kern, "null_basis")
-  if (is.null(nb)) matrix(1, nrow(Z), 1) else nb(Z)
+  if (is.null(nb)) return(matrix(1, nrow(Z), 1))
+  nb(Z)
 }
 
 # ============================================================

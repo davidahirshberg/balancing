@@ -1,5 +1,39 @@
 ## Utilities
 
+# ============================================================
+# Logger
+# ============================================================
+
+#' Create a logger that writes to a connection (default: stdout).
+#' log$info(fmt, ...) writes a line. indent(log, header) prints the header
+#' and returns a new logger with one extra level of indentation.
+make_logger = function(con = stdout(), prefix = "", ns = "",
+                       store = new.env(parent = emptyenv())) {
+  list(
+    info = function(fmt, ...) cat(prefix, sprintf(fmt, ...), "\n", sep = "", file = con),
+    data = function(key, val) assign(paste0(ns, key), val, envir = store),
+    get  = function(key) get(paste0(ns, key), envir = store, inherits = FALSE),
+    all  = function() as.list(store),
+    save = function(path) saveRDS(as.list(store), path)
+  )
+}
+
+null_logger = list(info  = function(...) invisible(),
+                   data  = function(...) invisible(),
+                   get   = function(...) NULL,
+                   all   = function() list(),
+                   save  = function(...) invisible())
+
+indent = function(log, header) {
+  e = environment(log$info)
+  if (!exists("con", envir = e, inherits = FALSE)) return(log)
+  log$info("%s", header)
+  make_logger(con    = e$con,
+              prefix = paste0(e$prefix, "  "),
+              ns     = paste0(e$ns, header, "::"),
+              store  = e$store)
+}
+
 #' Ensure Z is a matrix (at least 2d).
 atleast_2d = function(Z) {
   if (is.null(dim(Z))) Z = matrix(Z, ncol = 1)
@@ -63,20 +97,24 @@ outerproduct = function(A, B, K) {
 #' @param tol Convergence tolerance on gradient norm.
 #' @param delta0 Initial trust-region radius.
 #' @return list(theta, val, grad, iter)
+# conv_fn(theta_old, theta_new) -> scalar: convergence criterion.
+# Default NULL uses ||grad|| < tol. Supply a Bregman divergence closure
+# for geometry-appropriate stopping (e.g. D_chi*(phi_t, phi_{t-1})).
 .tr_newton = function(fg, hv, theta0, precond = NULL,
                       maxiter = 50, cg_maxiter = 50, tol = 1e-6,
-                      delta0 = 1.0) {
+                      delta0 = 1.0, conv_fn = NULL, weight_fn = NULL) {
   theta = theta0
   res = fg(theta)
   val = res$val; grad = res$grad
   delta = delta0
   trace = data.frame(iter = integer(0), val = numeric(0),
                      gnorm = numeric(0), delta = numeric(0),
-                     accepted = logical(0))
+                     accepted = logical(0), bregman = numeric(0),
+                     wdelta = numeric(0))
 
   for (iter in 1:maxiter) {
     gnorm = sqrt(sum(grad^2))
-    if (gnorm < tol) break
+    if (is.null(conv_fn) && gnorm < tol) break
 
     # Steihaug-Toint CG: approximately solve H·p = -g within trust region.
     # If we hit the boundary or negative curvature, return the boundary point.
@@ -96,17 +134,24 @@ outerproduct = function(A, B, K) {
 
     if (predicted > 0 && is.finite(val_new) && actual / predicted > 0.1) {
       # Accept step
+      theta_old = theta
       theta = theta_new; val = val_new; grad = res_new$grad
       ratio = actual / predicted
       pnorm = sqrt(sum(p^2))
-      trace[nrow(trace) + 1, ] = list(iter, val, gnorm, delta, TRUE)
+      bdiv   = if (!is.null(conv_fn))  conv_fn(theta_old, theta)  else NA_real_
+      wdelta = if (!is.null(weight_fn)) {
+        gam_old = weight_fn(theta_old); gam_new = weight_fn(theta)
+        sqrt(mean((gam_new - gam_old)^2))
+      } else NA_real_
+      trace[nrow(trace) + 1, ] = list(iter, val, gnorm, delta, TRUE, bdiv, wdelta)
+      if (!is.null(conv_fn) && !is.na(bdiv) && bdiv < tol) break
       if (ratio > 0.75 && pnorm > 0.8 * delta)
         delta = min(delta * 2, 1e8)
       else if (ratio < 0.25)
         delta = delta * 0.25
     } else {
       # Reject step, shrink
-      trace[nrow(trace) + 1, ] = list(iter, val, gnorm, delta, FALSE)
+      trace[nrow(trace) + 1, ] = list(iter, val, gnorm, delta, FALSE, NA_real_, NA_real_)
       delta = delta * 0.25
       if (delta < 1e-15 * (1 + sqrt(sum(theta^2)))) break
     }

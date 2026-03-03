@@ -51,14 +51,16 @@ eta1 = sigma_ref^2 / n
 fit1 = kernel_bregman(X, our_kern, eta = eta1,
                        dispersion = quadratic_dispersion(),
                        target = tgt$target, K = K_ours)
-pred1 = predict_phi(fit1, X_test)
+phi1  = \(Z) .phi(fit1, Z)
+pred1 = phi1(X_test)
 
 # Wrong: eta = sigma^2 / n^2 (so n*eta = sigma^2/n, too small)
 eta2 = sigma_ref^2 / n^2
 fit2 = kernel_bregman(X, our_kern, eta = eta2,
                        dispersion = quadratic_dispersion(),
                        target = tgt$target, K = K_ours)
-pred2 = predict_phi(fit2, X_test)
+phi2  = \(Z) .phi(fit2, Z)
+pred2 = phi2(X_test)
 
 cat("=== Regularization scaling test ===\n")
 cat("n =", n, ", sigma_ref =", sigma_ref, "\n")

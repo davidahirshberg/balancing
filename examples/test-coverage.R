@@ -36,14 +36,18 @@ while (i <= length(args)) {
 # Cell grid: DGP × resolution
 # ============================================================
 dgp_defs = list(
-  paper_cts = list(dgp = "paper_cts", horizon = 1,   p = 2),
-  grf_type1 = list(dgp = "grf_type1", horizon = 0.8, p = 5),
-  grf_type2 = list(dgp = "grf_type2", horizon = 1.2, p = 5)
+  paper_cts     = list(dgp = "paper_cts",     horizon = 1,   p = 2, valid_res = c(2, 4, 8, 16, Inf)),
+  grf_type1     = list(dgp = "grf_type1",     horizon = 0.8, p = 5, valid_res = c(2, 4, 8, 16, Inf)),
+  grf_type2     = list(dgp = "grf_type2",     horizon = 1.2, p = 5, valid_res = c(2, 4, 8, 16, Inf)),
+  pham_discrete = list(dgp = "pham_discrete", horizon = 8,   p = 2, valid_res = c(2, 4, 8, 16),
+                       native_discrete = TRUE)
 )
 resolutions = c(2, 4, 8, 16, Inf)  # Inf = continuous
 
 cells = expand.grid(dgp_name = names(dgp_defs), res = resolutions,
                     stringsAsFactors = FALSE)
+cells = cells[mapply(function(d, r) r %in% dgp_defs[[d]]$valid_res,
+                     cells$dgp_name, cells$res), ]
 cells = cells[order(match(cells$dgp_name, names(dgp_defs)), cells$res), ]
 rownames(cells) = NULL
 
@@ -60,15 +64,15 @@ cell_name = sprintf("%s_%s", cell$dgp_name,
 # ============================================================
 # Balancing methods: get bootstrap + coverage
 # kern: "pham" = product_kernel (block-diagonal), "smooth" = matern (shared time)
-# lam_disp: dispersion for lambda (hazard model)
+# lambda_disp: dispersion for lambda (hazard model)
 # time: "discrete" or "continuous"
 bal_methods = list(
-  Pham_quad     = list(kern = "pham",        lam_disp = "quadratic", time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
-  Pham_normed   = list(kern = "pham_normed", lam_disp = "quadratic", time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
-  Pham_logistic = list(kern = "pham",        lam_disp = "softplus",  time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
-  KBW_disc      = list(kern = "smooth", lam_disp = "softplus",  time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
-  KBW_cts       = list(kern = "smooth", lam_disp = "entropy",   time = "continuous", n_folds = 2, res = c(Inf)),
-  PI            = list(kern = "pham",   lam_disp = "quadratic", time = "discrete", n_folds = 3, res = c(2, 4, 8, 16),
+  Pham_quad     = list(kern = "pham",        lambda_disp = "quadratic", time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
+  Pham_normed   = list(kern = "pham_normed", lambda_disp = "quadratic", time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
+  Pham_logistic = list(kern = "pham",        lambda_disp = "softplus",  time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
+  KBW_disc      = list(kern = "smooth", lambda_disp = "softplus",  time = "discrete", n_folds = 2, res = c(2, 4, 8, 16)),
+  KBW_cts       = list(kern = "smooth", lambda_disp = "entropy",   time = "continuous", n_folds = 2, res = c(Inf)),
+  PI            = list(kern = "pham",   lambda_disp = "quadratic", time = "discrete", n_folds = 3, res = c(2, 4, 8, 16),
                        skip_estimands = "rmst")
 )
 
@@ -89,285 +93,19 @@ if (!is_cts) estimand_names = c(estimand_names, "tsm1")
 # Setup
 # ============================================================
 source("R/kernel.R")
-for (f in c("R/estimands.R", "R/survival.R", "R/tuning.R", "R/dgp.R"))
+for (f in c("R/estimands.R", "R/survival.R", "R/surv_estimate.R", "R/tuning.R", "R/dgp.R"))
   source(f)
 
-# ============================================================
-# Helpers (from estimate.R — the pieces that do real work)
-# ============================================================
+# Helpers: gamma_measure, compute_direct, correction_terms, make_dchis_gamma_ts,
+# dr_fold/crossfit/bootstrap now come from R/surv_estimate.R.
 
-# Build the gamma target measure from the estimand's dpsi_grid.
-# Returns a measure list(Z, r) suitable for project_target.
-gam_measure = function(estimand, predict_haz, eval_Z, mesh_u, mesh,
-                       M_train, du_bin, w_eval = NULL) {
-  emb = estimand$dpsi_grid(predict_haz, eval_Z, mesh_u, mesh, M_train, du_bin)
-  if (!is.null(w_eval)) {
-    n_eval = nrow(atleast_2d(eval_Z))
-    n_per_subj = length(emb$r) %/% n_eval
-    emb$r = emb$r * rep(w_eval, times = n_per_subj)
-  }
-  emb
-}
-
-# Compute direct estimand from a predict_phi function.
-# Returns list(direct, predict_haz).
-compute_direct = function(predict_phi_fn, lam_disp, estimand, eval_Z,
-                          M_train, du_bin, mesh, horizon, discrete) {
-  predict_haz = function(k, Z_ev)
-    lam_disp$dchis(predict_phi_fn(cbind(mesh[k], Z_ev)))
-
-  if (discrete) {
-    direct = estimand$direct_discrete(predict_haz, eval_Z, M_train, du_bin)
-  } else {
-    Q_surv = 100
-    predict_haz_cts = function(k, Z_ev) {
-      phi = predict_phi_fn(cbind((k - 1) * horizon / Q_surv, Z_ev))
-      pmax(lam_disp$dchis(phi) / du_bin, 0)
-    }
-    direct = estimand$direct_cts(predict_haz_cts, eval_Z, horizon, Q_surv)
-  }
-  list(direct = direct, predict_haz = predict_haz)
-}
-
-# Compute DR correction terms (compensator + dirac) and noise variance.
-correction_terms = function(lam_bound, gam_bound, T_obs_eval, D_eval,
-                            mesh, du_bin, eval_Z, n_eval,
-                            lam_disp, dchis_gamma,
-                            horizon, Q_comp, discrete) {
-  if (discrete) {
-    comp = compensator_discrete(lam_bound, gam_bound,
-                                T_obs_eval, D_eval, mesh,
-                                lam_disp, dchis_gamma, eval_Z)
-  } else {
-    comp = compensator_simpson(lam_bound, gam_bound,
-                               T_obs_eval, D_eval, eval_Z, horizon, Q_comp,
-                               lam_disp, dchis_gamma, du_bin)
-  }
-
-  M_train = length(mesh)
-  dirac = rep(0, n_eval)
-  events = which(D_eval == 1 & T_obs_eval <= horizon)
-  if (length(events) > 0) {
-    t_ev = T_obs_eval[events]
-    bin_idx = pmin(ceiling(t_ev / du_bin), M_train)
-    t_mesh = mesh[bin_idx]
-    phi_ev = eval_phi_vec(gam_bound, t_mesh, events)
-    Z_ev = cbind(t_mesh, eval_Z[events, , drop = FALSE])
-    dirac[events] = dchis_gamma(Z_ev, phi_ev)
-  }
-
-  list(correction = dirac - comp$comp, noise_var = comp$noise_var,
-       events = events)
-}
-
-# ============================================================
-# DR estimator + crossfit + bootstrap (S3)
-# ============================================================
-
-# Compute DR estimate on one fold's data.
-# Fits gamma, computes direct + correction, caches state for bootstrap.
-dr_fold = function(fd, lam_fit, kern, eta_gam, gam_disp, dchis_gamma,
-                   lam_disp, estimand, horizon, Q_comp, discrete,
-                   gam_target = NULL, gam_target_null = NULL) {
-  n_eval = fd$n_eval
-  lam_bound = bind_subjects(lam_fit, fd$eval_Z)
-  M_train = length(fd$mesh)
-
-  # Direct estimate
-  predict_phi_fn = function(Z) predict_phi(lam_fit, Z)
-  dr = compute_direct(predict_phi_fn, lam_disp, estimand, fd$eval_Z,
-                       M_train, fd$du_bin, fd$mesh, horizon, discrete)
-
-  # Gamma target and dispersion
-  if (is.null(gam_target)) {
-    emb = gam_measure(estimand, dr$predict_haz, fd$eval_Z,
-                      fd$mesh_u, fd$mesh, M_train, fd$du_bin)
-    tgt = split_target(project_target(fd$stacked_gam$Z_pool, kern, emb),
-                       nrow(fd$stacked_gam$Z_pool))
-    gam_target = tgt$target
-    gam_target_null = tgt$target_null
-    gam_disp = target_scaled_entropy(gam_target)
-  }
-
-  # Fit gamma
-  gam_fit = kernel_bregman(fd$stacked_gam$Z_pool, kern,
-                           eta = eta_gam, dispersion = gam_disp,
-                           target = gam_target, target_null = gam_target_null)
-  gam_bound = bind_subjects(gam_fit, fd$eval_Z)
-
-  # DR correction
-  ct = correction_terms(lam_bound, gam_bound, fd$T_obs_eval, fd$D_eval,
-                         fd$mesh, fd$du_bin, fd$eval_Z, n_eval,
-                         lam_disp, dchis_gamma, horizon, Q_comp, discrete)
-
-  list(direct = dr$direct, correction = ct$correction,
-       noise_var = ct$noise_var, events = ct$events,
-       lam_fit = lam_fit, gam_fit = gam_fit,
-       lam_bound = lam_bound, gam_bound = gam_bound,
-       predict_haz = dr$predict_haz, dchis_gamma = dchis_gamma)
-}
-
-# Cross-fit a DR estimator over fold partitions.
-# partition_fn(fd) -> per-fold result with $direct, $correction, $noise_var + model state.
-# Stores problem params so bootstrap() needs only n_reps.
-crossfit = function(n, fold_data, partition_fn,
-                    kern, eta_gam, lam_disp, gam_disp,
-                    estimand, horizon, Q_comp, discrete) {
-  n_folds = length(fold_data)
-  fold_results = lapply(fold_data, partition_fn)
-
-  terms = rep(NA_real_, n)
-  direct = rep(NA_real_, n)
-  noise_var = rep(NA_real_, n)
-  for (ff in seq_along(fold_data)) {
-    idx = fold_data[[ff]]$eval_idx
-    terms[idx] = fold_results[[ff]]$direct + fold_results[[ff]]$correction
-    direct[idx] = fold_results[[ff]]$direct
-    noise_var[idx] = fold_results[[ff]]$noise_var
-  }
-
-  structure(
-    list(est = mean(terms), se = sd(terms) / sqrt(n),
-         se_amle = sqrt((var(direct) + mean(pmax(noise_var, 0))) / n),
-         terms = terms, direct = direct, noise_var = noise_var,
-         folds = fold_data, fold_results = fold_results, n = n,
-         kern = kern, eta_gam = eta_gam, lam_disp = lam_disp,
-         gam_disp = gam_disp, estimand = estimand,
-         horizon = horizon, Q_comp = Q_comp, discrete = discrete),
-    class = "dr_result")
-}
-
-# S3 generic
-bootstrap = function(obj, ...) UseMethod("bootstrap")
-
-# Multiplier bootstrap for dr_result.
-# Returns a boot_result with $boot_ates, $boot_ses, and CI methods.
-bootstrap.dr_result = function(obj, n_reps, ...) {
-  n = obj$n
-  kern = obj$kern; lam_disp = obj$lam_disp; gam_disp = obj$gam_disp
-  estimand = obj$estimand; horizon = obj$horizon
-  Q_comp = obj$Q_comp; discrete = obj$discrete; eta_gam = obj$eta_gam
-
-  boot_ates = rep(NA_real_, n_reps)
-  boot_ses = rep(NA_real_, n_reps)
-
-  # Pre-compute cross-kernel matrices for gamma target projection
-  K_cross_gam = lapply(seq_along(obj$folds), function(ff) {
-    fd = obj$folds[[ff]]
-    M_train = length(fd$mesh)
-    dummy_haz = function(k, Z_ev) rep(0, nrow(atleast_2d(Z_ev)))
-    emb_template = estimand$dpsi_grid(dummy_haz, fd$eval_Z, fd$mesh_u,
-                                       fd$mesh, M_train, fd$du_bin)
-    kernel_matrix(fd$stacked_gam$Z_pool, emb_template$Z, kern)
-  })
-
-  for (b in 1:n_reps) {
-    w_subj = rpois(n, 1)
-    all_terms = c()
-
-    for (ff in seq_along(obj$folds)) {
-      fd = obj$folds[[ff]]
-      fr = obj$fold_results[[ff]]
-      M_train = length(fd$mesh)
-
-      w_pool_lam = w_subj[fd$lam_idx][fd$i_pool_lam]
-      w_pool_gam = w_subj[fd$gam_idx][fd$i_pool_gam]
-      w_eval = w_subj[fd$eval_idx]
-
-      # One-step Newton for lambda
-      c_lam_b = project_target(fd$stacked_lam$Z_pool, kern,
-                               list(Z = fd$stacked_lam$Z_pool,
-                                    r = w_pool_lam * fd$stacked_lam$Y_pool),
-                               K_cross = fr$lam_fit$K)
-      tgt_b = split_target(c_lam_b, nrow(fd$stacked_lam$Z_pool))
-      lam_boot = onestep_bregman(fr$lam_fit, tgt_b$target, tgt_b$target_null,
-                                  w_pool_lam)
-
-      # Direct from bootstrap lambda
-      predict_phi_fn = function(Z)
-        predict_phi_alpha(lam_boot$alpha, lam_boot$beta, fr$lam_fit, Z)
-      dr_b = compute_direct(predict_phi_fn, lam_disp, estimand, fd$eval_Z,
-                             M_train, fd$du_bin, fd$mesh, horizon, discrete)
-
-      # Gamma target from bootstrap lambda
-      emb_b = gam_measure(estimand, dr_b$predict_haz, fd$eval_Z,
-                           fd$mesh_u, fd$mesh, M_train, fd$du_bin, w_eval = w_eval)
-      c_gam_b = split_target(
-        project_target(fd$stacked_gam$Z_pool, kern, emb_b,
-                       K_cross = K_cross_gam[[ff]]),
-        nrow(fd$stacked_gam$Z_pool))
-
-      # Re-solve gamma (warm-start from original fit)
-      gam_disp_b = target_scaled_entropy(c_gam_b$target)
-      gam_boot = kernel_bregman(fd$stacked_gam$Z_pool, kern,
-                                 eta = eta_gam, dispersion = gam_disp_b,
-                                 target = c_gam_b$target,
-                                 target_null = c_gam_b$target_null,
-                                 w = w_pool_gam,
-                                 K = fr$gam_fit$K,
-                                 alpha0 = fr$gam_fit$alpha,
-                                 beta0 = fr$gam_fit$beta)
-
-      # Patch bound objects with bootstrap alphas
-      lam_bound_b = fr$lam_bound
-      lam_bound_b$alpha = lam_boot$alpha
-      lam_bound_b$beta = lam_boot$beta
-
-      gam_bound_b = fr$gam_bound
-      gam_bound_b$alpha = gam_boot$alpha
-      gam_bound_b$beta = gam_boot$beta
-
-      ct_b = correction_terms(lam_bound_b, gam_bound_b,
-                               fd$T_obs_eval, fd$D_eval,
-                               fd$mesh, fd$du_bin, fd$eval_Z, fd$n_eval,
-                               lam_disp, fr$dchis_gamma,
-                               horizon, Q_comp, discrete)
-
-      dr_terms_b = dr_b$direct + ct_b$correction
-      all_terms = c(all_terms, w_eval * dr_terms_b)
-    }
-
-    sw = sum(w_subj)
-    boot_ates[b] = sum(all_terms) / sw
-    boot_ses[b] = sd(all_terms[all_terms != 0]) / sqrt(n)
-  }
-
-  structure(
-    list(boot_ates = boot_ates, boot_ses = boot_ses,
-         est = obj$est, se_amle = obj$se_amle),
-    class = "boot_result")
-}
-
-# boot_result methods
-se.boot_result = function(obj, ...) sd(obj$boot_ates)
-
-ci_t = function(obj, ...) UseMethod("ci_t")
-ci_t.boot_result = function(obj, level = 0.95, ...) {
-  good = !is.na(obj$boot_ates) & !is.nan(obj$boot_ates) & abs(obj$boot_ates) < 100
-  if (sum(good) < 10) return(c(NA, NA))
-  alpha = 1 - level
-  t_stats = (obj$boot_ates[good] - obj$est) / obj$boot_ses[good]
-  q = quantile(t_stats, c(alpha / 2, 1 - alpha / 2))
-  c(obj$est - q[2] * obj$se_amle, obj$est - q[1] * obj$se_amle)
-}
-
-ci_pct = function(obj, ...) UseMethod("ci_pct")
-ci_pct.boot_result = function(obj, level = 0.95, ...) {
-  good = !is.na(obj$boot_ates) & !is.nan(obj$boot_ates) & abs(obj$boot_ates) < 100
-  if (sum(good) < 10) return(c(NA, NA))
-  alpha = 1 - level
-  unname(quantile(obj$boot_ates[good], c(alpha / 2, 1 - alpha / 2)))
-}
-
-n_bad.boot_result = function(obj) {
-  sum(is.na(obj$boot_ates) | is.nan(obj$boot_ates) | abs(obj$boot_ates) > 100)
-}
 
 get_dgp_fn = function(dgp_name) {
   switch(dgp_name,
-    paper_cts = paper_cts_dgp,
-    grf_type1 = grf_type1_dgp,
-    grf_type2 = grf_type2_dgp,
+    paper_cts     = paper_cts_dgp,
+    grf_type1     = grf_type1_dgp,
+    grf_type2     = grf_type2_dgp,
+    pham_discrete = function(horizon, ...) pham_discrete_dgp(t_max = 8),
     stop("Unknown DGP: ", dgp_name))
 }
 get_estimand = function(est_name) {
@@ -377,75 +115,38 @@ get_estimand = function(est_name) {
     tsm1 = surv_tsm(1),
     stop("Unknown estimand: ", est_name))
 }
-make_kern = function(kern_name) {
+make_kern = function(kern_name, mesh = NULL) {
   no_null = function(Z) matrix(nrow = nrow(atleast_2d(Z)), ncol = 0)
   base = matern_kernel(sigma = 2, nu = 3/2)
   base_normed = matern_kernel(sigma = 2, nu = 3/2, null_basis = no_null)
-  # levels = c(0, 1) ensures null_basis has consistent columns for prediction
-  # (even when evaluating at a single treatment arm)
-  if (kern_name == "pham") direct_product(base, iw = c(1, 2))              # block time + treatment, seminorm
-  else if (kern_name == "pham_normed") direct_product(base_normed, iw = c(1, 2))  # block time + treatment, norm
-  else if (kern_name == "smooth") direct_product(base, iw = 2, levels = c(0, 1)) # block treatment, smooth over time
+  # levels defines the direct product decomposition of the RKHS.
+  # Must be explicit for seminorm kernels — otherwise null_basis dimensions
+  # depend on which (u, W) combos appear in the data, breaking prediction.
+  if (kern_name == "pham") direct_product(base, iw = c(1, 2), levels = list(mesh, c(0, 1)))
+  else if (kern_name == "pham_normed") direct_product(base_normed, iw = c(1, 2), levels = list(mesh, c(0, 1)))
+  else if (kern_name == "smooth") direct_product(base, iw = 2, levels = c(0, 1))
   else stop("Unknown kernel: ", kern_name)
 }
-make_lam_disp = function(name) {
+make_lambda_disp = function(name) {
   switch(name, quadratic = quadratic_dispersion(),
          softplus = softplus_dispersion(), entropy = entropy_dispersion())
 }
 
-# Build dchis_gamma(Z, phi) for target_scaled_entropy prediction.
-# Z = (u, treatment, X...), phi = dual variable.
-# Returns r(Z) + sign(r(Z)) * exp(sign(r(Z)) * phi) where r comes from
-# the estimand's dot_psi_Z evaluated at the fitted lambda.
-#
-# dpsi_grid always uses discrete building blocks (M_train mesh bins), even
-# for continuous time — the hazard is piecewise-constant on the training mesh.
-# So r is always looked up by mapping u to a mesh bin.
-#
-# For ATE estimands, r is the PER-ARM derivative (dp1 at arm=1, dp0 at arm=0),
-# not the combined ATE derivative. This matches the dpsi_grid training stacking.
-make_dchis_gamma_ts = function(predict_haz, estimand_obj, eval_Z,
-                                M_train, du_bin) {
-  n_eval = nrow(atleast_2d(eval_Z))
-  eval_hash = apply(eval_Z, 1, paste0, collapse = "|")
-  lookup = setNames(seq_len(n_eval), eval_hash)
-  has_per_arm = !is.null(estimand_obj$dot_psi_arm_discrete)
-
-  if (has_per_arm) {
-    # ATE: precompute per-arm r matrices
-    dp1 = estimand_obj$dot_psi_arm_discrete(predict_haz, eval_Z, M_train, du_bin, arm = 1)
-    dp0 = estimand_obj$dot_psi_arm_discrete(predict_haz, eval_Z, M_train, du_bin, arm = 0)
-    r1_mat = r0_mat = matrix(NA_real_, n_eval, M_train)
-    for (k in 1:M_train) { r1_mat[, k] = dp1(k); r0_mat[, k] = dp0(k) }
-  } else {
-    # TSM: single arm
-    dpsi = estimand_obj$dot_psi_Z_discrete(predict_haz, eval_Z, M_train, du_bin)
-    r_mat = matrix(NA_real_, n_eval, M_train)
-    for (k in 1:M_train) r_mat[, k] = dpsi(k)
-  }
-
-  function(Z, phi) {
-    u = Z[, 1]
-    bin = pmin(pmax(ceiling(u / du_bin), 1L), M_train)
-    idx = lookup[apply(Z[, -1, drop = FALSE], 1, paste0, collapse = "|")]
-    if (has_per_arm) {
-      A = Z[, 2]
-      r = ifelse(A == 1, r1_mat[cbind(idx, bin)], r0_mat[cbind(idx, bin)])
-    } else {
-      r = r_mat[cbind(idx, bin)]
-    }
-    sigma = sign(r)
-    r + sigma * exp(sigma * phi)
-  }
-}
-
-# Population truth
+# Population truth — discretized at the estimator's resolution
 cts_dgp = get_dgp_fn(cell$dgp_name)(horizon = dgp_def$horizon)
 set.seed(42)
 big = cts_dgp$generate(10000, p = dgp_def$p)
-truths = list(surv_prob = big$psi1_true - big$psi0_true,
-              rmst = big$rmst1_true - big$rmst0_true,
-              tsm1 = big$psi1_true)
+if (is_cts) {
+  truths = list(surv_prob = big$psi1_true - big$psi0_true,
+                rmst = big$rmst1_true - big$rmst0_true,
+                tsm1 = big$psi1_true)
+} else {
+  disc_dgp = discretize(cts_dgp, n_steps = as.integer(cell$res))
+  disc_truth = compute_truth(disc_dgp$hazard, big$Z, horizon, "discrete", disc_dgp$grid)
+  truths = list(surv_prob = disc_truth$psi1 - disc_truth$psi0,
+                rmst = disc_truth$rmst1 - disc_truth$rmst0,
+                tsm1 = disc_truth$psi1)
+}
 
 cat(sprintf("=== Cell %d: %s ===\n", cell_id, cell_name))
 cat(sprintf("DGP=%s, res=%s, n=%d, p=%d\n",
@@ -459,39 +160,44 @@ cat(sprintf("n_reps=%d, n=%d, boot=%d, workers=%d\n\n", n_reps, n_obs, boot_reps
 
 if (n_workers > 1) plan(multisession, workers = n_workers)
 
-log_dir = sprintf("code/spinoff3/coverage-logs-%s-n%d-%s",
+log_dir = sprintf("examples/coverage-logs-%s-n%d-%s",
                   cell_name, n_obs, format(Sys.time(), "%Y%m%d-%H%M"))
 dir.create(log_dir, showWarnings = FALSE)
 cat(sprintf("Logs: %s/\n", log_dir))
 
-make_logger = function(rep_id) {
-  f = file.path(log_dir, sprintf("rep-%03d.log", rep_id))
-  function(...) cat(sprintf(...), "\n", file = f, append = TRUE)
-}
 
 # ============================================================
 # One rep
 # ============================================================
 one_rep = function(rep_id) {
+  # Define before re-sourcing: source() writes to globalenv and would overwrite
+  # make_logger with utils.R's list-returning version, breaking findFun.
+  log_file = file.path(log_dir, sprintf("rep-%03d.log", rep_id))
+  logger = function(...) cat(sprintf(...), "\n", file = log_file, append = TRUE)
+
   # Re-source for worker processes (multisession)
   source("R/kernel.R")
   for (f in c("R/estimands.R", "R/survival.R", "R/tuning.R", "R/dgp.R"))
     source(f)
 
-  log = make_logger(rep_id)
-  log("rep %d started (cell %s)", rep_id, cell_name)
+  logger("rep %d started (cell %s)", rep_id, cell_name)
 
-  # Generate continuous data (same seed regardless of resolution)
-  cts_dgp = get_dgp_fn(cell$dgp_name)(horizon = dgp_def$horizon)
+  dgp_obj = get_dgp_fn(cell$dgp_name)(horizon = dgp_def$horizon)
   set.seed(rep_id)
-  cts_dat = cts_dgp$generate(n_obs, p = dgp_def$p)
   n = n_obs
 
-  # Discretize if needed
-  disc_dat = NULL
-  if (!is_cts) {
-    disc_dgp_obj = discretize(cts_dgp, as.integer(cell$res))
-    disc_dat = disc_dgp_obj$generate_from(cts_dat)
+  if (isTRUE(dgp_def$native_discrete)) {
+    # Native discrete DGP: generate directly, no continuous→discrete step
+    disc_dat = dgp_obj$generate(n_obs, p = dgp_def$p)
+    cts_dat = disc_dat
+  } else {
+    # Continuous DGP: generate continuous, discretize if needed
+    cts_dat = dgp_obj$generate(n_obs, p = dgp_def$p)
+    disc_dat = NULL
+    if (!is_cts) {
+      disc_dgp_obj = discretize(dgp_obj, as.integer(cell$res))
+      disc_dat = disc_dgp_obj$generate_from(cts_dat)
+    }
   }
 
   sigma2_grid = 2^(-6:6)
@@ -531,7 +237,7 @@ one_rep = function(rep_id) {
           W.hat = cts_dat$pi_x, num.trees = 2000)
         ate = grf::average_treatment_effect(csf)
         list(est = ate[1], se = ate[2])
-      }, error = function(e) { log("GRF %s error: %s", en, e$message); NULL })
+      }, error = function(e) { logger("GRF %s error: %s", en, e$message); NULL })
 
       if (!is.null(grf_res)) {
         truth = truths[[en]]
@@ -545,7 +251,7 @@ one_rep = function(rep_id) {
         all_coverage[[length(all_coverage) + 1]] = row
       }
     }
-    log("GRF done")
+    logger("GRF done")
   }
 
   if ("1S" %in% active_ext) {
@@ -561,7 +267,7 @@ one_rep = function(rep_id) {
                       n_steps = as.integer(cell$res),
                       horizon = dgp_def$horizon,
                       estimand_name = os_estimand),
-        error = function(e) { log("1S %s error: %s", en, e$message); NULL })
+        error = function(e) { logger("1S %s error: %s", en, e$message); NULL })
 
       if (!is.null(os_res) && !is.na(os_res$est)) {
         truth = truths[[en]]
@@ -578,7 +284,7 @@ one_rep = function(rep_id) {
         all_coverage[[length(all_coverage) + 1]] = row
       }
     }
-    log("1S done")
+    logger("1S done")
   }
 
   # ==========================================================
@@ -588,9 +294,8 @@ one_rep = function(rep_id) {
   for (mname in active_bal) {
     t_method = proc.time()
     mdef = bal_methods[[mname]]
-    kern = make_kern(mdef$kern)
-    lam_disp = make_lam_disp(mdef$lam_disp)
-    gam_disp = entropy_dispersion()
+    lambda_disp = make_lambda_disp(mdef$lambda_disp)
+    gamma_disp_fn = if (!is.null(mdef$gamma_disp_fn)) mdef$gamma_disp_fn else target_scaled_entropy
     time_type = mdef$time
 
     # Data for this method
@@ -602,61 +307,28 @@ one_rep = function(rep_id) {
       M_tr = 15
     }
 
-    log("--- method: %s (kern=%s, disp=%s, time=%s) ---",
-        mname, mdef$kern, mdef$lam_disp, time_type)
-
     discrete = (time_type == "discrete")
+    horizon = dgp_def$horizon
+    mesh = ((1:M_tr) - 0.5) * (horizon / M_tr)
+    kern = make_kern(mdef$kern, mesh = mesh)
+
+    logger("--- method: %s (kern=%s, disp=%s, time=%s) ---",
+        mname, mdef$kern, mdef$lambda_disp, time_type)
+
     Z = cbind(A, X)
     n_folds = mdef$n_folds
-    horizon = dgp_def$horizon
     Q_comp = 50
-
-    # Fold setup: build training meshes, kernel matrices, targets
-    fold_id = (seq_len(n) %% n_folds) + 1L
-    fold_data = lapply(1:n_folds, function(ff) {
-      if (n_folds == 2) {
-        lam_idx = which(fold_id != ff); gam_idx = which(fold_id == ff); eval_idx = gam_idx
-      } else {
-        lam_idx = which(fold_id == ff)
-        gam_idx = which(fold_id == (ff %% n_folds) + 1)
-        eval_idx = which(fold_id == ((ff + 1) %% n_folds) + 1)
-      }
-
-      lam_train = build_training_mesh(T_obs[lam_idx], D[lam_idx],
-                                       Z[lam_idx, , drop = FALSE], horizon, M_tr)
-      stacked_lam = at_risk_pairs(lam_train)
-
-      gam_train = build_training_mesh(T_obs[gam_idx], D[gam_idx],
-                                       Z[gam_idx, , drop = FALSE], horizon, M_tr)
-      stacked_gam = at_risk_pairs(gam_train)
-
-      K_lam = kernel_matrix(stacked_lam$Z_pool, stacked_lam$Z_pool, kern)
-      c_lam = project_target(stacked_lam$Z_pool, kern,
-                             list(Z = stacked_lam$Z_pool, r = stacked_lam$Y_pool),
-                             K_cross = K_lam)
-      tgt_lam = split_target(c_lam, nrow(stacked_lam$Z_pool))
-
-      eval_Z = Z[eval_idx, , drop = FALSE]
-
-      list(lam_idx = lam_idx, gam_idx = gam_idx, eval_idx = eval_idx,
-           stacked_lam = stacked_lam, stacked_gam = stacked_gam,
-           mesh = lam_train$mesh, du_bin = stacked_lam$du_bin,
-           mesh_u = unique(stacked_gam$u_pool),
-           K_lam = K_lam, tgt_lam = tgt_lam,
-           eval_Z = eval_Z,
-           T_obs_eval = T_obs[eval_idx], D_eval = D[eval_idx],
-           n_eval = length(eval_idx),
-           i_pool_lam = stacked_lam$i_pool, i_pool_gam = stacked_gam$i_pool)
-    })
+    observations = list(T_obs = T_obs, D = D, Z = Z)
+    mps = mesh_project(observations, horizon, M_tr, n_folds, kern)
 
     # --- Lambda grid sweep (estimand-independent) ---
     t_lam = proc.time()
-    lam_cache = vector("list", m_grid)
-    cv_lam = rep(NA_real_, m_grid)
-    lam_ok_vec = logical(m_grid)
+    lambda_cache = vector("list", m_grid)
+    cv_lambda = rep(NA_real_, m_grid)
+    lambda_ok_vec = logical(m_grid)
 
-    prev_lam_alpha = vector("list", n_folds)
-    prev_lam_beta = vector("list", n_folds)
+    prev_lambda_alpha = vector("list", n_folds)
+    prev_lambda_beta = vector("list", n_folds)
 
     sweep_order = order(sigma2_grid, decreasing = TRUE)
     for (jl in sweep_order) {
@@ -664,32 +336,27 @@ one_rep = function(rep_id) {
       fold_fits = vector("list", n_folds)
 
       for (ff in 1:n_folds) {
-        fd = fold_data[[ff]]
-        lam_fit = kernel_bregman(fd$stacked_lam$Z_pool, kern,
-                         eta = eta_lam, dispersion = lam_disp,
-                         target = fd$tgt_lam$target,
-                         target_null = fd$tgt_lam$target_null,
-                         K = fd$K_lam,
-                         alpha0 = prev_lam_alpha[[ff]],
-                         beta0 = prev_lam_beta[[ff]])
-
-        lam_bound = bind_subjects(lam_fit, fd$eval_Z)
-        fold_fits[[ff]] = list(lam_fit = lam_fit, lam_bound = lam_bound)
-        prev_lam_alpha[[ff]] = lam_fit$alpha
-        prev_lam_beta[[ff]] = lam_fit$beta
+        mp = mps[[ff]]
+        warm = if (!is.null(prev_lambda_alpha[[ff]]))
+          list(alpha = prev_lambda_alpha[[ff]], beta = prev_lambda_beta[[ff]]) else NULL
+        lambda_fit = fit_lambda(mp, kern, eta_lam, lambda_disp, warm = warm)
+        lambda_fit_ = .bind(lambda_fit, mp$eval_Z)
+        fold_fits[[ff]] = list(lambda_fit = lambda_fit, lambda_fit_ = lambda_fit_)
+        prev_lambda_alpha[[ff]] = lambda_fit$alpha
+        prev_lambda_beta[[ff]] = lambda_fit$beta
       }
 
-      lam_cache[[jl]] = fold_fits
-      lam_ok_vec[jl] = TRUE
+      lambda_cache[[jl]] = fold_fits
+      lambda_ok_vec[jl] = TRUE
 
-      cv_lam[jl] = mean(sapply(1:n_folds, function(ff) {
-        fd = fold_data[[ff]]
-        cv_dual_loss(fold_fits[[ff]]$lam_fit,
-                     fd$stacked_gam$Z_pool,
-                     fd$stacked_gam$Y_pool)
+      cv_lambda[jl] = mean(sapply(1:n_folds, function(ff) {
+        mp = mps[[ff]]
+        cv_dual_loss(fold_fits[[ff]]$lambda_fit,
+                     mp$stacked_gamma$Z_pool,
+                     mp$stacked_gamma$Y_pool)
       }))
     }
-    log("%s lambda sweep: %.1fs", mname, (proc.time() - t_lam)[3])
+    logger("%s lambda sweep: %.1fs", mname, (proc.time() - t_lam)[3])
 
     # --- Per-estimand: gamma sweep, selection, bootstrap ---
     method_ests = setdiff(estimand_names, mdef$skip_estimands)
@@ -701,20 +368,19 @@ one_rep = function(rep_id) {
       grid_dir_val = array(NA_real_, c(m_grid, m_grid))
       grid_dir_se = array(NA_real_, c(m_grid, m_grid))
       grid_dr_se = array(NA_real_, c(m_grid, m_grid))
-      grid_cv_lam = array(NA_real_, c(m_grid, m_grid))
-      grid_cv_gam = array(NA_real_, c(m_grid, m_grid))
+      grid_cv_lambda = array(NA_real_, c(m_grid, m_grid))
+      grid_cv_gamma = array(NA_real_, c(m_grid, m_grid))
 
       for (jl in 1:m_grid) {
-        if (!lam_ok_vec[jl]) next
-        fold_fits = lam_cache[[jl]]
+        if (!lambda_ok_vec[jl]) next
+        fold_fits = lambda_cache[[jl]]
 
         # Direct estimate per fold (via compute_direct)
         dir_per_fold = lapply(1:n_folds, function(ff) {
-          fd = fold_data[[ff]]
-          lf = fold_fits[[ff]]$lam_fit
-          predict_phi_fn = function(Z) predict_phi(lf, Z)
-          compute_direct(predict_phi_fn, lam_disp, estimand_obj, fd$eval_Z,
-                         length(fd$mesh), fd$du_bin, fd$mesh, horizon, discrete)
+          mp = mps[[ff]]
+          lf = fold_fits[[ff]]$lambda_fit
+          phi = function(Z) .phi(lf, Z)
+          compute_direct(phi, lambda_disp, estimand_obj, mp, discrete)
         })
         dir_vals = unlist(lapply(dir_per_fold, `[[`, "direct"))
         dir_mean = mean(dir_vals)
@@ -722,100 +388,94 @@ one_rep = function(rep_id) {
 
         # Gamma measures and targets for training and test folds
         predict_haz_folds = lapply(1:n_folds, function(ff) {
-          fd = fold_data[[ff]]
-          lf = fold_fits[[ff]]$lam_fit
-          function(k, Z_ev) lam_disp$dchis(predict_phi(lf, cbind(fd$mesh[k], Z_ev)))
+          mp = mps[[ff]]
+          lf = fold_fits[[ff]]$lambda_fit
+          phi   = \(Z) .phi(lf, Z)
+          dchis = \(p) .dchis(lambda_disp, p)
+          function(k, Z_ev) dchis(phi(cbind(mp$mesh[k], Z_ev)))
         })
 
-        emb_gam_train = lapply(1:n_folds, function(ff) {
-          fd = fold_data[[ff]]
-          gam_measure(estimand_obj, predict_haz_folds[[ff]], fd$eval_Z,
-                      fd$mesh_u, fd$mesh, length(fd$mesh), fd$du_bin)
-        })
-        c_gam_train = lapply(1:n_folds, function(ff) {
-          fd = fold_data[[ff]]
-          split_target(project_target(fd$stacked_gam$Z_pool, kern,
-                                      emb_gam_train[[ff]]),
-                       nrow(fd$stacked_gam$Z_pool))
+        emb_gamma_train = lapply(1:n_folds, function(ff)
+          gamma_measure(estimand_obj, predict_haz_folds[[ff]], mps[[ff]]))
+        c_gamma_train = lapply(1:n_folds, function(ff) {
+          mp = mps[[ff]]
+          split_target(project_target(mp$stacked_gamma$Z_pool, kern,
+                                      emb_gamma_train[[ff]]),
+                       nrow(mp$stacked_gamma$Z_pool))
         })
 
-        emb_gam_test = lapply(1:n_folds, function(ff) {
-          fd = fold_data[[ff]]
-          gam_measure(estimand_obj, predict_haz_folds[[ff]], fd$eval_Z,
-                      fd$mesh_u, fd$mesh, length(fd$mesh), fd$du_bin)
-        })
-        c_gam_test = lapply(1:n_folds, function(ff) {
-          fd = fold_data[[ff]]
-          split_target(project_target(fd$stacked_lam$Z_pool, kern,
-                                      emb_gam_test[[ff]]),
-                       nrow(fd$stacked_lam$Z_pool))
+        emb_gamma_test = lapply(1:n_folds, function(ff)
+          gamma_measure(estimand_obj, predict_haz_folds[[ff]], mps[[ff]]))
+        c_gamma_test = lapply(1:n_folds, function(ff) {
+          mp = mps[[ff]]
+          split_target(project_target(mp$stacked_lambda$Z_pool, kern,
+                                      emb_gamma_test[[ff]]),
+                       nrow(mp$stacked_lambda$Z_pool))
         })
 
-        gam_disp_test = lapply(1:n_folds, function(ff)
-          target_scaled_entropy(c_gam_test[[ff]]$target))
-        gam_disp_train = lapply(1:n_folds, function(ff)
-          target_scaled_entropy(c_gam_train[[ff]]$target))
+        gamma_disp_test = lapply(1:n_folds, function(ff)
+          gamma_disp_fn(c_gamma_test[[ff]]$target))
+        gamma_disp_train = lapply(1:n_folds, function(ff)
+          gamma_disp_fn(c_gamma_train[[ff]]$target))
 
         dchis_gamma_folds = lapply(1:n_folds, function(ff) {
-          fd = fold_data[[ff]]
-          make_dchis_gamma_ts(predict_haz_folds[[ff]], estimand_obj, fd$eval_Z,
-                              length(fd$mesh), fd$du_bin)
+          mp = mps[[ff]]
+          make_dchis_gamma_ts(predict_haz_folds[[ff]], estimand_obj, mp$eval_Z,
+                              length(mp$mesh), mp$du_bin)
         })
 
-        prev_gam_alpha = vector("list", n_folds)
-        prev_gam_beta = vector("list", n_folds)
+        prev_gamma_alpha = vector("list", n_folds)
+        prev_gamma_beta = vector("list", n_folds)
 
         for (jg in sweep_order) {
           eta_gam = sigma2_grid[jg] / n
           all_terms = c(); all_direct = c(); all_noise_var = c()
-          gam_fits = vector("list", n_folds)
+          gamma_fits = vector("list", n_folds)
 
           for (ff in 1:n_folds) {
-            fd = fold_data[[ff]]
-            # Fit gamma directly
-            gam_fit = kernel_bregman(fd$stacked_gam$Z_pool, kern,
-                             eta = eta_gam, dispersion = gam_disp_train[[ff]],
-                             target = c_gam_train[[ff]]$target,
-                             target_null = c_gam_train[[ff]]$target_null,
-                             alpha0 = prev_gam_alpha[[ff]],
-                             beta0 = prev_gam_beta[[ff]])
-            gam_bound = bind_subjects(gam_fit, fd$eval_Z)
+            mp = mps[[ff]]
+            gamma_fit = kernel_bregman(mp$stacked_gamma$Z_pool, kern,
+                             eta = eta_gam, dispersion = gamma_disp_train[[ff]],
+                             target = c_gamma_train[[ff]]$target,
+                             target_null = c_gamma_train[[ff]]$target_null,
+                             alpha0 = prev_gamma_alpha[[ff]],
+                             beta0 = prev_gamma_beta[[ff]])
+            gamma_fit_ = .bind(gamma_fit, mp$eval_Z)
 
-            # DR correction directly
-            ct = correction_terms(fold_fits[[ff]]$lam_bound, gam_bound,
-                                   fd$T_obs_eval, fd$D_eval,
-                                   fd$mesh, fd$du_bin, fd$eval_Z, fd$n_eval,
-                                   lam_disp, dchis_gamma_folds[[ff]],
-                                   horizon, Q_comp, discrete)
+            ct = correction_terms(mp, fold_fits[[ff]]$lambda_fit_, gamma_fit_,
+                                   lambda_disp, dchis_gamma_folds[[ff]],
+                                   Q_comp, discrete)
 
             all_terms = c(all_terms, dir_per_fold[[ff]]$direct + ct$correction)
             all_direct = c(all_direct, dir_per_fold[[ff]]$direct)
             all_noise_var = c(all_noise_var, ct$noise_var)
-            gam_fits[[ff]] = gam_fit
-            prev_gam_alpha[[ff]] = gam_fit$alpha
-            prev_gam_beta[[ff]] = gam_fit$beta
+            gamma_fits[[ff]] = gamma_fit
+            prev_gamma_alpha[[ff]] = gamma_fit$alpha
+            prev_gamma_beta[[ff]] = gamma_fit$beta
           }
-          # Sanity check: if gamma phi is extreme, the solve is degenerate
-          gam_degenerate = any(sapply(1:n_folds, function(ff) {
-            gf = gam_fits[[ff]]
+          # Sanity check: if chi*'s exponential argument (sigma*phi) is large positive,
+          # the solve is degenerate. Large |phi| in the *opposite* sign (phi < 0 for
+          # sigma=-1) is the safe saturated regime (mu ≈ target), not degenerate.
+          gamma_degenerate = any(sapply(1:n_folds, function(ff) {
+            gf = gamma_fits[[ff]]
             phi = as.vector(gf$K %*% gf$alpha)
             if (ncol(gf$B) > 0) phi = phi + as.vector(gf$B %*% gf$beta)
-            max(abs(phi)) > 50
+            max(gf$dispersion$sigma * phi) > 50
           }))
-          if (gam_degenerate) break
+          if (gamma_degenerate) break
 
-          cv_gam_vals = sapply(1:n_folds, function(ff)
-            cv_dual_loss(gam_fits[[ff]],
-                         fold_data[[ff]]$stacked_lam$Z_pool,
-                         c_gam_test[[ff]]$target,
-                         dispersion_test = gam_disp_test[[ff]]))
+          cv_gamma_vals = sapply(1:n_folds, function(ff)
+            cv_dual_loss(gamma_fits[[ff]],
+                         mps[[ff]]$stacked_lambda$Z_pool,
+                         c_gamma_test[[ff]]$target,
+                         dispersion_test = gamma_disp_test[[ff]]))
 
           grid_est[jl, jg] = mean(all_terms)
           grid_dir_val[jl, jg] = dir_mean
           grid_dir_se[jl, jg] = dir_se
           grid_dr_se[jl, jg] = sd(all_terms) / sqrt(n)
-          grid_cv_lam[jl, jg] = cv_lam[jl]
-          grid_cv_gam[jl, jg] = mean(cv_gam_vals)
+          grid_cv_lambda[jl, jg] = cv_lambda[jl]
+          grid_cv_gamma[jl, jg] = mean(cv_gamma_vals)
         }
       }
 
@@ -829,28 +489,28 @@ one_rep = function(rep_id) {
         dir_se = as.vector(t(grid_dir_se)),
         dr_est = as.vector(t(grid_est)),
         dr_se = as.vector(t(grid_dr_se)),
-        loo_lam = as.vector(t(grid_cv_lam)),
-        loo_gam = as.vector(t(grid_cv_gam)),
+        loo_lam = as.vector(t(grid_cv_lambda)),
+        loo_gam = as.vector(t(grid_cv_gamma)),
         rep = rep_id)
       all_paths[[length(all_paths) + 1]] = path
 
       # --- Selection strategies ---
       jg_mid = ceiling(m_grid / 2)
-      lam_slice = path[path$sigma2_gam == sigma2_grid[jg_mid], ]
-      lam_slice = lam_slice[order(lam_slice$sigma2_lam), ]
+      lambda_slice = path[path$sigma2_gam == sigma2_grid[jg_mid], ]
+      lambda_slice = lambda_slice[order(lambda_slice$sigma2_lam), ]
 
       select_lam = function(tuning) {
         ctx = tuning_context(sigma2_grid / n, n = n,
-          dir_val = function() lam_slice$dir_val,
-          dir_se = function() lam_slice$dir_se,
-          loo_scores = function() lam_slice$loo_lam)
+          dir_val = function() lambda_slice$dir_val,
+          dir_se = function() lambda_slice$dir_se,
+          loo_scores = function() lambda_slice$loo_lam)
         tuning$select(ctx)
       }
 
-      select_gam = function(sel_lam_val) {
-        gam_slice = path[path$sigma2_lam == sel_lam_val, ]
-        gam_slice = gam_slice[order(gam_slice$sigma2_gam), ]
-        idx = which.min(gam_slice$loo_gam)
+      select_gamma = function(sel_lam_val) {
+        gamma_slice = path[path$sigma2_lam == sel_lam_val, ]
+        gamma_slice = gamma_slice[order(gamma_slice$sigma2_gam), ]
+        idx = which.min(gamma_slice$loo_gam)
         if (length(idx) == 0) return(NA_real_)
         sigma2_grid[idx]
       }
@@ -861,25 +521,13 @@ one_rep = function(rep_id) {
         list(label = "cv",     tuning = cv_tuning()))
 
       # Estimate + bootstrap at a selected (s2_lam, s2_gam).
-      # Uses crossfit to get a dr_result, then bootstrap for CIs.
+      # Uses survival_effect from the package to get a dr_result.
       estimate_at = function(s2_lam, s2_gam) {
-        eta_l = s2_lam / n; eta_g = s2_gam / n
-        crossfit(n, fold_data, function(fd) {
-          lam_fit = kernel_bregman(fd$stacked_lam$Z_pool, kern,
-                           eta = eta_l, dispersion = lam_disp,
-                           target = fd$tgt_lam$target,
-                           target_null = fd$tgt_lam$target_null,
-                           K = fd$K_lam)
-          # Build dchis_gamma for this fold
-          predict_haz_fd = function(k, Z_ev)
-            lam_disp$dchis(predict_phi(lam_fit, cbind(fd$mesh[k], Z_ev)))
-          dchis_gam = make_dchis_gamma_ts(predict_haz_fd, estimand_obj,
-                                           fd$eval_Z, length(fd$mesh), fd$du_bin)
-          dr_fold(fd, lam_fit, kern, eta_g, NULL, dchis_gam,
-                  lam_disp, estimand_obj, horizon, Q_comp, discrete)
-        }, kern = kern, eta_gam = eta_g, lam_disp = lam_disp,
-           gam_disp = gam_disp, estimand = estimand_obj,
-           horizon = horizon, Q_comp = Q_comp, discrete = discrete)
+        survival_effect(observations, kern, estimand_obj, lambda_disp,
+                        eta_lam = s2_lam / n, eta_gam = s2_gam / n,
+                        horizon = horizon, M_train = M_tr, n_folds = n_folds,
+                        Q_comp = Q_comp, discrete = discrete,
+                        gamma_disp_fn = gamma_disp_fn)
       }
 
       # Build a coverage row from a dr_result + optional boot_result.
@@ -899,7 +547,7 @@ one_rep = function(rep_id) {
         if (!is.null(boot)) {
           nb = n_bad.boot_result(boot)
           if (nb > 0)
-            log("%s %s %s: %d/%d bootstrap reps degenerate",
+            logger("%s %s %s: %d/%d bootstrap reps degenerate",
                 mname, en, label, nb, length(boot$boot_ates))
           row$se_boot = se.boot_result(boot)
           row$n_boot_bad = nb
@@ -922,13 +570,13 @@ one_rep = function(rep_id) {
         label = strat$label
         sel = select_lam(strat$tuning)
         sel_sigma2_lam = sel$eta * n
-        sel_sigma2_gam = select_gam(sel_sigma2_lam)
+        sel_sigma2_gam = select_gamma(sel_sigma2_lam)
         if (is.na(sel_sigma2_gam)) {
-          log("%s %s %s: no valid gamma at sigma2_lam=%.3g", mname, en, label, sel_sigma2_lam)
+          logger("%s %s %s: no valid gamma at sigma2_lam=%.3g", mname, en, label, sel_sigma2_lam)
           all_coverage[[length(all_coverage) + 1]] = na_row(mname, en)
           next
         }
-        log("%s %s %s selected: sigma2_lam=%.3g, sigma2_gam=%.3g",
+        logger("%s %s %s selected: sigma2_lam=%.3g, sigma2_gam=%.3g",
             mname, en, label, sel_sigma2_lam, sel_sigma2_gam)
 
         result = estimate_at(sel_sigma2_lam, sel_sigma2_gam)
@@ -940,7 +588,7 @@ one_rep = function(rep_id) {
           sel_idx = which(sigma2_grid == sel_sigma2_lam)
           us_idx = sel_idx - 2
           if (us_idx >= 1) {
-            us_sigma2_gam = select_gam(sigma2_grid[us_idx])
+            us_sigma2_gam = select_gamma(sigma2_grid[us_idx])
             result2 = estimate_at(sigma2_grid[us_idx], us_sigma2_gam)
             boot2 = if (boot_reps > 0) bootstrap(result2, boot_reps) else NULL
             all_coverage[[length(all_coverage) + 1]] = coverage_row(result2, "lepski-2",
@@ -948,9 +596,9 @@ one_rep = function(rep_id) {
           }
         }
       }
-      log("%s %s: %.1fs", mname, en, (proc.time() - t_est)[3])
+      logger("%s %s: %.1fs", mname, en, (proc.time() - t_est)[3])
     }
-    log("%s total: %.1fs", mname, (proc.time() - t_method)[3])
+    logger("%s total: %.1fs", mname, (proc.time() - t_method)[3])
   }
 
   list(coverage = do.call(rbind, all_coverage),
@@ -1007,7 +655,7 @@ for (en in estimand_names) {
 }
 
 # Save
-out_file = sprintf("code/spinoff3/coverage-results-%s-n%d-%s.rds",
+out_file = sprintf("examples/coverage-results-%s-n%d-%s.rds",
                    cell_name, n_obs, format(Sys.time(), "%Y%m%d-%H%M"))
 saveRDS(list(results = df, paths = all_paths,
              params = list(n_obs = n_obs, n_reps = n_reps,

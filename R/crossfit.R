@@ -50,8 +50,8 @@ crossfit_single = function(Y, W, X, kern, estimand, dispersion,
 
     # Pre-compute kernel matrix and targets (shared across eta grid)
     K_fit = kernel_matrix(Z_fit, Z_fit, kern)
-    B_fit = null_basis(Z_fit, kern)
-    tgt_fit = dpsi_from_response(Y_fit, K_fit, B_fit)
+    c_fit = project_target(Z_fit, kern, list(Z = Z_fit, r = Y_fit), K_cross = K_fit)
+    tgt_fit = split_target(c_fit, nrow(Z_fit))
 
     # Fit outcome model at each eta
     models = vector("list", length(eta_grid))

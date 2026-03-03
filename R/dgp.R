@@ -397,14 +397,14 @@ efficient_variance = function(dgp, dat,
       S1[, k] = exp(-ch1); S0[, k] = exp(-ch0)
     }
 
-    lam_grid = ev_ch = cen_ch = matrix(0, n, M)
+    lambda_grid = ev_ch = cen_ch = matrix(0, n, M)
     run_ev = run_cen = rep(0, n)
     for (k in 1:M) {
       lk = hazard_fn(grid[k], Z)
       ck = censor_hazard_fn(grid[k], Z)
       run_ev = run_ev + lk * du; run_cen = run_cen + ck * du
       ev_ch[, k] = run_ev; cen_ch[, k] = run_cen
-      lam_grid[, k] = lk
+      lambda_grid[, k] = lk
     }
 
     at_risk = exp(-ev_ch - cen_ch)
@@ -432,7 +432,7 @@ efficient_variance = function(dgp, dat,
 
     T_eff = pmin(dat$T_obs, horizon)
     active = outer(T_eff, grid, ">=")
-    compensator = rowSums(active * gamma_grid * lam_grid) * du
+    compensator = rowSums(active * gamma_grid * lambda_grid) * du
 
     dirac = rep(0, n)
     ev_idx = which(dat$D == 1 & dat$T_obs <= horizon)

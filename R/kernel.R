@@ -5,6 +5,8 @@
 ##
 ## Replaces: balancing/R/{kernels,bregman,dispersions}.R
 
+source("R/utils.R")
+
 
 # ============================================================
 # Utilities
@@ -83,7 +85,16 @@ gaussian_kernel = function(sigma = 1,
 #' Direct product: k((w,x),(w',x')) = k_x(x,x') * 1{w=w'}.
 #' One copy of ker(rho_x) per grouping level.
 #' iw: column indices in Z that hold grouping variable(s).
-direct_product = function(k_x, iw = 1, levels = NULL) {
+#' levels (required): for single iw, a vector of values. For multiple iw,
+#'   a list of per-column level vectors (Cartesian product taken automatically).
+#'   Defines the direct product decomposition — data must only contain
+#'   declared levels.
+direct_product = function(k_x, iw = 1, levels) {
+  # Expand list of per-column levels to pasted Cartesian product
+  if (is.list(levels)) {
+    grid = do.call(expand.grid, levels)
+    levels = apply(grid, 1, paste, collapse = "_")
+  }
   nb_base = attr(k_x, "null_basis")
   nb = function(Z) {
     Z = atleast_2d(Z)
@@ -93,13 +104,18 @@ direct_product = function(k_x, iw = 1, levels = NULL) {
     d_base = ncol(B_base)
     gv = if (length(iw) == 1) Z[, iw]
          else apply(Z[, iw, drop = FALSE], 1, paste, collapse = "_")
-    lvls = if (!is.null(levels)) levels else sort(unique(gv))
+    bad = setdiff(unique(gv), levels)
+    if (length(bad) > 0)
+      stop("direct_product: data contains undeclared levels: ",
+           paste(head(bad, 5), collapse = ", "))
     n = nrow(Z)
-    B = matrix(0, n, length(lvls) * d_base)
-    for (l in seq_along(lvls)) {
-      idx = which(gv == lvls[l])
-      cols = ((l - 1) * d_base + 1):(l * d_base)
-      B[idx, cols] = B_base[idx, ]
+    B = matrix(0, n, length(levels) * d_base)
+    if (d_base > 0) {
+      for (l in seq_along(levels)) {
+        idx = which(gv == levels[l])
+        cols = ((l - 1) * d_base + 1):(l * d_base)
+        B[idx, cols] = B_base[idx, ]
+      }
     }
     B
   }
@@ -176,86 +192,130 @@ outerproduct = function(A, B, K) {
 
 
 # ============================================================
-# Dispersions
+# Dispersions: S3 class with composable base records
 # ============================================================
+#
+#' **Primal.** The Z-dependent dispersion shifts and sign-flips a base chi:
+#'   chi_Z(gamma) = v * chi(sigma * (gamma - o))
+#' where chi is the base, o is the offset (balancing target),
+#' sigma = sign(o) is the sign-flip, v >= 0 is the penalty scale.
+#'
+#' **Conjugate.** With psi = sigma * phi / v:
+#'   chi*_Z(phi)      = o * phi + v * chi*(psi)
+#'   dot chi*_Z(phi)   = o + sigma * dot chi*(psi)        [v cancels in chain rule]
+#'   ddot chi*_Z(phi)  = ddot chi*(psi) / v
+#'
+#' Base records carry the irreducible math. The S3 class handles composition.
 
-entropy_dispersion = function() {
-  list(name = "entropy", linear = FALSE,
-       chi = function(g) ifelse(g > 0, g * log(g) - g, Inf),
-       chis = function(phi) exp(phi),
-       dchis = function(phi) exp(phi),
-       ddchis = function(phi) exp(phi),
-       resid = function(g, Y, w) w * (g - Y),
-       predict = function(phi) exp(phi))
+# ---- S3 generics (dot-prefix to avoid clash with local lambdas) ----
+
+.dchis  = function(disp, phi) UseMethod(".dchis")
+.ddchis = function(disp, phi) UseMethod(".ddchis")
+.chis   = function(disp, phi) UseMethod(".chis")
+
+# ---- Base dispersion records ----
+#' Each base record defines chi* and its first two derivatives on the
+#' "canonical" domain (no shift, no sign-flip, no scale).
+#' A custom base only needs these three functions.
+
+#' Entropy: chi(g) = g log g - g on R+.
+#' chi*(phi) = exp(phi). Bregman divergence is KL / Poisson.
+entropy_base = list(
+  dchis  = function(phi) exp(phi),
+  ddchis = function(phi) exp(phi),
+  chis   = function(phi) exp(phi)
+)
+
+#' Quadratic: chi(g) = g^2/2 on R.
+#' chi*(phi) = phi^2/2. Linear: one Newton step exact.
+quadratic_base = list(
+  dchis    = function(phi) phi,
+  ddchis   = function(phi) rep(1, length(phi)),
+  chis     = function(phi) phi^2 / 2,
+  quadratic = TRUE
+)
+
+#' Softplus: chi(g) = g log g + (1-g) log(1-g) on (0,1).
+#' chi*(phi) = log(1 + exp(phi)). Maps dual -> primal via expit.
+softplus_base = list(
+  dchis  = function(phi) plogis(phi),
+  ddchis = function(phi) { p = plogis(phi); p * (1 - p) },
+  chis   = function(phi) log(1 + exp(phi))
+)
+
+#' Shifted entropy: chi(g) = (g-1) log(g-1) - (g-1) + 1 on [1, inf).
+#' chi*(phi) = phi + exp(phi). dchis = 1 + exp(phi).
+shifted_entropy_base = list(
+  dchis  = function(phi) 1 + exp(phi),
+  ddchis = function(phi) exp(phi),
+  chis   = function(phi) phi + exp(phi)
+)
+
+#' Positivity-constrained quadratic: chi(g) = (g_+)^2/2 on R+.
+#' chi*(phi) = (phi_+)^2/2. Active set changes with sign of phi.
+pos_quadratic_base = list(
+  dchis  = function(phi) pmax(phi, 0),
+  ddchis = function(phi) as.numeric(phi > 0),
+  chis   = function(phi) pmax(phi, 0)^2 / 2
+)
+
+# ---- Constructor ----
+
+#' Build a dispersion from a base record with optional composition.
+#'
+#' @param base  Named list with $dchis, $ddchis, $chis.
+#' @param offset  Per-observation offset o (balancing target). Default 0.
+#' @param sigma  Per-observation sign-flip in {-1, +1}. Default 1 (no flip).
+#' @param v  Per-observation penalty scale (v >= 0). Default 1.
+dispersion = function(base, offset = 0, sigma = 1, v = 1)
+  structure(list(base = base, offset = offset, sigma = sigma, v = v),
+            class = "dispersion")
+
+# ---- S3 methods ----
+
+#' dot chi*_Z(phi) = o + sigma * dot chi*(psi),  psi = sigma * phi / v
+.dchis.dispersion = function(disp, phi) {
+  psi = disp$sigma * phi / disp$v
+  disp$offset + disp$sigma * disp$base$dchis(psi)
 }
 
-softplus_dispersion = function() {
-  list(name = "softplus", linear = FALSE,
-       chi = function(g) { g = pmin(pmax(g, 1e-15), 1 - 1e-15); g * log(g) + (1 - g) * log(1 - g) },
-       chis = function(phi) log(1 + exp(phi)),
-       dchis = function(phi) plogis(phi),
-       ddchis = function(phi) { p = plogis(phi); p * (1 - p) },
-       resid = function(g, Y, w) w * (g - Y),
-       predict = function(phi) plogis(phi))
+#' ddot chi*_Z(phi) = ddot chi*(psi) / v
+.ddchis.dispersion = function(disp, phi) {
+  psi = disp$sigma * phi / disp$v
+  disp$base$ddchis(psi) / disp$v
 }
 
-quadratic_dispersion = function() {
-  list(name = "quadratic", linear = TRUE,
-       chi = function(g) g^2 / 2,
-       chis = function(phi) phi^2 / 2,
-       dchis = function(phi) phi,
-       ddchis = function(phi) rep(1, length(phi)),
-       resid = function(g, Y, w) w * (g - Y),
-       predict = function(phi) phi)
+#' chi*_Z(phi) = o * phi + v * chi*(psi)
+.chis.dispersion = function(disp, phi) {
+  psi = disp$sigma * phi / disp$v
+  disp$offset * phi + disp$v * disp$base$chis(psi)
 }
 
-shifted_entropy_dispersion = function() {
-  list(name = "shifted_entropy", linear = FALSE,
-       chi = function(g) ifelse(g >= 1, (g - 1) * log(g - 1) - (g - 1) + 1, Inf),
-       chis = function(phi) phi + exp(phi),
-       dchis = function(phi) 1 + exp(phi),
-       ddchis = function(phi) exp(phi),
-       resid = function(g, Y, w) w * (g - Y),
-       predict = function(phi) 1 + exp(phi))
-}
+# ---- Convenience aliases ----
+#' These preserve existing call signatures. Each returns a dispersion S3 object.
 
-#' Sign-flip: chi_Z(gamma) = chi(W * gamma). W in {-1,+1}.
-signflip = function(base, W) {
-  list(name = paste0("signflip_", base$name), linear = base$linear,
-       chi = function(g) base$chi(W * g),
-       chis = function(phi) base$chis(W * phi),
-       dchis = function(phi) W * base$dchis(W * phi),
-       ddchis = function(phi) base$ddchis(W * phi),
-       resid = function(g, Y, w) w * (g - Y),
-       predict = function(phi) W * base$dchis(W * phi),
-       base = base, W = W)
-}
+entropy_dispersion   = function() dispersion(entropy_base)
+softplus_dispersion  = function() dispersion(softplus_base)
+quadratic_dispersion = function() dispersion(quadratic_base)
+shifted_entropy_dispersion = function() dispersion(shifted_entropy_base)
 
-#' Target-scaled entropy: gamma = r + sigma*exp(sigma*phi), sigma = sign(r).
-target_scaled_entropy = function(r) {
-  sigma = sign(r)
-  list(name = "target_scaled_entropy", linear = FALSE,
-       chi = function(g) { u = sigma * g - abs(r); ifelse(u > 0, u * log(u) - u + 1, Inf) },
-       chis = function(phi) r * phi + exp(sigma * phi) - 1,
-       dchis = function(phi) r + sigma * exp(sigma * phi),
-       ddchis = function(phi) exp(sigma * phi),
-       resid = function(g, Y, w) w * (g - Y),
-       predict = function(phi) r + sigma * exp(sigma * phi),
-       sigma = sigma, r = r)
-}
+#' Sign-flip: chi_Z(gamma) = chi(W * gamma). W in {-1, +1}.
+signflip = function(base, W) dispersion(base, sigma = W)
+
+#' Target-scaled entropy: gamma = r + sigma * exp(sigma * phi), sigma = sign(r).
+#' Floors |gamma| at |r|, then adaptive entropy on the excess.
+target_scaled_entropy = function(r)
+  dispersion(entropy_base, offset = r, sigma = sign(r))
 
 #' Variance-weighted quadratic with sign-flip and target shift.
-variance_weighted_quadratic = function(r, v) {
-  sigma = sign(r)
-  list(name = "variance_weighted_quadratic", linear = FALSE,
-       chi = function(g) { u = sigma * g - abs(r); ifelse(u >= 0, v / 2 * u^2, Inf) },
-       chis = function(phi) { sp = pmax(sigma * phi, 0); r * phi + sp^2 / (2 * v) },
-       dchis = function(phi) r + sigma * pmax(sigma * phi, 0) / v,
-       ddchis = function(phi) as.numeric(sigma * phi > 0) / v,
-       resid = function(g, Y, w) w * (g - Y),
-       predict = function(phi) r + sigma * pmax(sigma * phi, 0) / v,
-       sigma = sigma, r = r, v = v)
-}
+#' chi_Z(gamma) = (v/2)(gamma - r)^2 on sign(gamma) = sign(r), |gamma| >= |r|.
+variance_weighted_quadratic = function(r, v)
+  dispersion(pos_quadratic_base, offset = r, sigma = sign(r), v = v)
+
+#' Target-shifted quadratic: gamma = r + phi. No sign constraint.
+#' Works with mixed-sign r (ATE) where TSE's sign constraint breaks.
+target_shifted_quadratic = function(r)
+  dispersion(quadratic_base, offset = r)
 
 
 # ============================================================
@@ -360,7 +420,8 @@ kernel_bregman = function(Z, kern, eta, dispersion,
                           target, target_null = NULL,
                           w = NULL, K = NULL,
                           alpha0 = NULL, beta0 = NULL,
-                          maxiter = 25, tol = 1e-6) {
+                          maxiter = 25, tol = 1e-3,
+                          log = null_logger) {
   Z = atleast_2d(Z)
   n = nrow(Z)
   if (is.null(K)) K = kernel_matrix(Z, Z, kern)
@@ -377,50 +438,81 @@ kernel_bregman = function(Z, kern, eta, dispersion,
   } else numeric(0)
 
   K_chol = chol(K)
-  if (isTRUE(dispersion$linear)) maxiter = 1
 
-  grad_norm_0 = NULL
-  status = sprintf("maxiter (%d)", maxiter)
-  for (iter in 1:maxiter) {
-    phi = as.vector(K %*% alpha)
-    if (d > 0) phi = phi + as.vector(B %*% beta)
+  #' Lambda bindings: dchis(phi) reads like dot chi*(phi).
+  disp = dispersion
+  dchis  = function(phi) .dchis(disp, phi)
+  ddchis = function(phi) .ddchis(disp, phi)
+  chis   = function(phi) .chis(disp, phi)
 
-    mu = dispersion$dchis(phi)
-    wc = w * dispersion$ddchis(phi)
-    if (any(!is.finite(mu)) || any(!is.finite(wc))) {
-      status = sprintf("non-finite at iter %d", iter); break
-    }
-    wc = pmax(wc, 1e-10 * max(abs(wc), 1))
-
-    Ka = as.vector(K %*% alpha)
+  fg_kernel = function(theta) {
+    a = theta[1:n]
+    b = if (d > 0) theta[(n+1):(n+d)] else numeric(0)
+    phi = as.vector(K %*% a)
+    if (d > 0) phi = phi + as.vector(B %*% b)
+    mu = dchis(phi)
+    if (!all(is.finite(mu))) return(list(val = Inf, grad = theta * 0))
+    Ka = as.vector(K %*% a)
+    val = sum(w * chis(phi)) + (n * eta / 2) * sum(a * Ka) -
+          sum(target * a) - if (d > 0) sum(target_null * b) else 0
     g_a = as.vector(K %*% (w * mu)) + n * eta * Ka - target
-    v_a = .chol_solve(K_chol, -g_a)
-
-    wcK = sweep(K, 1, wc, "*")
-    M_aa = wcK + n * eta * diag(n)
-
-    if (d > 0) {
-      g_b = as.vector(crossprod(B, w * mu)) - target_null
-      wcB = wc * B
-      M = rbind(cbind(M_aa, wcB), cbind(crossprod(B, wcK), crossprod(B, wcB)))
-      m = nrow(M); M = M + (1e-8 * sum(diag(M)) / m) * diag(m)
-      delta = solve(M, c(v_a, -g_b))
-      d_a = delta[1:n]; d_b = delta[(n + 1):(n + d)]
-    } else {
-      d_a = as.vector(solve(M_aa, v_a)); d_b = numeric(0)
-    }
-
-    step_size = max(abs(d_a), if (d > 0) max(abs(d_b)) else 0)
-    grad_norm = sqrt(sum(g_a^2) + if (d > 0) sum(g_b^2) else 0)
-    if (!is.finite(step_size) || !is.finite(grad_norm)) {
-      status = sprintf("non-finite step at iter %d", iter); break
-    }
-    alpha = alpha + d_a; beta = beta + d_b
-    if (is.null(grad_norm_0)) grad_norm_0 = grad_norm
-    if (step_size < tol || grad_norm < tol * grad_norm_0) {
-      status = "converged"; break
-    }
+    g_b = if (d > 0) as.vector(crossprod(B, w * mu)) - target_null else numeric(0)
+    list(val = val, grad = c(g_a, g_b))
   }
+
+  hv_kernel = function(theta, v) {
+    a = theta[1:n]
+    b = if (d > 0) theta[(n+1):(n+d)] else numeric(0)
+    phi = as.vector(K %*% a)
+    if (d > 0) phi = phi + as.vector(B %*% b)
+    wc = w * ddchis(phi)
+    wc = pmax(wc, 1e-10 * max(abs(wc), 1))
+    v_a = v[1:n]
+    v_b = if (d > 0) v[(n+1):(n+d)] else numeric(0)
+    Kv_a = as.vector(K %*% v_a)
+    inner = wc * (Kv_a + if (d > 0) as.vector(B %*% v_b) else 0)
+    Hv_a = as.vector(K %*% inner) + n * eta * Kv_a
+    Hv_b = if (d > 0) as.vector(crossprod(B, inner)) else numeric(0)
+    c(Hv_a, Hv_b)
+  }
+
+  #' Bregman divergence D_chi*(phi_new, phi_old) = sum w_i [chi*(phi_new_i)
+  #' - chi*(phi_old_i) - dchi*(phi_old_i) * (phi_new_i - phi_old_i)]
+  bregman_conv = function(theta_old, theta_new) {
+    phi_fn = function(th) {
+      a = th[1:n]; b = if (d > 0) th[(n+1):(n+d)] else numeric(0)
+      phi = as.vector(K %*% a)
+      if (d > 0) phi = phi + as.vector(B %*% b)
+      phi
+    }
+    phi_old = phi_fn(theta_old)
+    phi_new = phi_fn(theta_new)
+    gam_old = dchis(phi_old)
+    sum(w * (chis(phi_new) - chis(phi_old) -
+             gam_old * (phi_new - phi_old)))
+  }
+
+  phi_from_theta = function(th) {
+    a = th[1:n]; b = if (d > 0) th[(n+1):(n+d)] else numeric(0)
+    phi = as.vector(K %*% a)
+    if (d > 0) phi = phi + as.vector(B %*% b)
+    phi
+  }
+  weight_fn = function(th) dchis(phi_from_theta(th))
+
+  delta0 = if (isTRUE(disp$base$quadratic)) Inf else 1.0
+  tr_res = .tr_newton(fg_kernel, hv_kernel, c(alpha, beta),
+                      maxiter = maxiter, tol = tol, delta0 = delta0,
+                      conv_fn = bregman_conv, weight_fn = weight_fn)
+
+  alpha = tr_res$theta[1:n]
+  beta  = if (d > 0) tr_res$theta[(n+1):(n+d)] else numeric(0)
+  iter  = tr_res$iter
+  status = if (tr_res$iter < maxiter) "converged"
+           else sprintf("maxiter (%d)", maxiter)
+
+  log$info("iter=%d (%s)", iter, status)
+  log$data("trace", tr_res$trace)
 
   # Lazy M_inv for one-step bootstrap
   M_lu_cache = NULL
@@ -428,7 +520,7 @@ kernel_bregman = function(Z, kern, eta, dispersion,
     if (!is.null(M_lu_cache)) return(M_lu_cache)
     phi_f = as.vector(K %*% alpha)
     if (d > 0) phi_f = phi_f + as.vector(B %*% beta)
-    wc_f = w * dispersion$ddchis(phi_f)
+    wc_f = w * ddchis(phi_f)
     wc_f = pmax(wc_f, 1e-10 * max(abs(wc_f), 1))
     wcK_f = sweep(K, 1, wc_f, "*")
     M_f = if (d > 0) {
@@ -448,6 +540,7 @@ kernel_bregman = function(Z, kern, eta, dispersion,
     kern = kern, Z = Z, K = K, B = B, eta = eta,
     K_chol = K_chol, get_M_lu = get_M_lu,
     dispersion = dispersion, iter = iter, status = status,
+    tr_trace = tr_res$trace,
     w = w, target = target, target_null = target_null
   ), class = "kernel_bregman")
 }
@@ -458,32 +551,11 @@ kernel_bregman = function(Z, kern, eta, dispersion,
 # ============================================================
 
 predict.kernel_bregman = function(obj, newZ, ...) {
-  obj$dispersion$dchis(predict_phi(obj, newZ))
+  phi   = \(Z) .phi(obj, Z)
+  dchis = \(p) .dchis(obj$dispersion, p)
+  dchis(phi(newZ))
 }
 
-predict_phi = function(obj, newZ) {
-  newZ = atleast_2d(newZ)
-  Knew = kernel_matrix(newZ, obj$Z, obj$kern)
-  phi = as.vector(Knew %*% obj$alpha)
-  d = length(obj$beta)
-  if (d > 0) {
-    B_new = null_basis(newZ, obj$kern)
-    phi = phi + as.vector(B_new %*% obj$beta)
-  }
-  phi
-}
-
-predict_phi_alpha = function(alpha, beta, model, newZ) {
-  newZ = atleast_2d(newZ)
-  Knew = kernel_matrix(newZ, model$Z, model$kern)
-  phi = as.vector(Knew %*% alpha)
-  d = length(beta)
-  if (d > 0) {
-    B_new = null_basis(newZ, model$kern)
-    phi = phi + as.vector(B_new %*% beta)
-  }
-  phi
-}
 
 
 # ============================================================
@@ -515,9 +587,11 @@ split_target = function(c_vec, n) {
 
 #' Out-of-sample dual loss: mean[ chi*(phi_test) - target_test * phi_test ].
 cv_dual_loss = function(fit, Z_test, target_test, dispersion_test = NULL) {
-  phi_test = predict_phi(fit, Z_test)
+  phi  = \(Z) .phi(fit, Z)
   disp = if (!is.null(dispersion_test)) dispersion_test else fit$dispersion
-  mean(disp$chis(phi_test) - target_test * phi_test)
+  chis = \(p) .chis(disp, p)
+  phi_test = phi(Z_test)
+  mean(chis(phi_test) - target_test * phi_test)
 }
 
 #' LOO CV loss (linearized at convergence).
@@ -527,7 +601,8 @@ loo_loss = function(fit) {
   d = length(fit$beta)
   if (d > 0) phi = phi + as.vector(fit$B %*% fit$beta)
   w = if (!is.null(fit$w)) fit$w else rep(1, n)
-  wc = w * fit$dispersion$ddchis(phi)
+  ddchis = \(p) .ddchis(fit$dispersion, p)
+  wc = w * ddchis(phi)
   wc = pmax(wc, 1e-10 * max(abs(wc), 1))
   raw_resid = n * fit$eta * fit$alpha / wc
   sqw = sqrt(wc)
@@ -556,9 +631,10 @@ onestep_bregman = function(model, target_new, target_null_new = NULL, w_new = NU
   if (is.null(w_new)) w_new = model$w
   if (is.null(target_null_new)) target_null_new = model$target_null
 
+  dchis = \(p) .dchis(disp, p)
   phi = as.vector(K %*% alpha)
   if (d > 0) phi = phi + as.vector(B %*% beta)
-  mu = disp$dchis(phi)
+  mu = dchis(phi)
   Ka = as.vector(K %*% alpha)
   g_a = as.vector(K %*% (w_new * mu)) + n * eta * Ka - target_new
   v_a = .chol_solve(model$K_chol, -g_a)
@@ -572,28 +648,38 @@ onestep_bregman = function(model, target_new, target_null_new = NULL, w_new = NU
   delta = as.vector(model$get_M_lu() %*% rhs)
   d_a = delta[1:n]
   d_b = if (d > 0) delta[(n + 1):(n + d)] else numeric(0)
-  list(alpha = alpha + d_a, beta = beta + d_b)
+  model$alpha = alpha + d_a
+  model$beta  = if (d > 0) beta + d_b else model$beta
+  model
 }
+
+
+# ============================================================
+# Z accessors: Z = (u, W, X) with time in col 1
+# ============================================================
+
+u = function(Z) Z[, 1]
+w = function(Z) Z[, 2]
+x = function(Z) Z[, -c(1, 2), drop = FALSE]
 
 
 # ============================================================
 # S3 generics
 # ============================================================
 
-bind     = function(model, Z, ...) UseMethod("bind")
-lambda   = function(model, u, Z, ...) UseMethod("lambda")
-gamma    = function(model, u, Z, ...) UseMethod("gamma")
-phi      = function(model, ...) UseMethod("phi")
+.bind    = function(model, Z, ...) UseMethod(".bind")
+.lambda  = function(model, Z, ...) UseMethod(".lambda")
+.gamma   = function(model, Z, ...) UseMethod(".gamma")
+.phi     = function(model, Z, ...) UseMethod(".phi")
 one_step = function(model, ...) UseMethod("one_step")
-phi_vec  = function(model, ...) UseMethod("phi_vec")
-gamma_vec = function(model, ...) UseMethod("gamma_vec")
+.gamma_vec = function(model, ...) UseMethod(".gamma_vec")
 
 
 # ============================================================
 # bind: cache covariate distances. Returns same type.
 # ============================================================
 
-bind.kernel_bregman = function(model, Z, ...) {
+.bind.kernel_bregman = function(model, Z, ...) {
   Z = atleast_2d(Z)
   Z_centers = model$Z
   u_centers = Z_centers[, 1]
@@ -634,60 +720,28 @@ bind.kernel_bregman = function(model, Z, ...) {
 
 
 # ============================================================
-# phi: linear predictor at scalar time u
+# phi: linear predictor. Z = (u, covariates), time in col 1.
 # ============================================================
 
-phi.kernel_bregman = function(model, u, Z, ...) {
+.phi.kernel_bregman = function(model, Z, ...) {
   Z = atleast_2d(Z)
   kern = model$kern
 
   if (!is.null(model$.bind_method) && model$.bind_method == "isotropic") {
-    delta_u2 = (u - model$.u_centers)^2
-    D2 = sweep(model$.D2_cov_cache, 2, delta_u2, "+")
-    D2[D2 < 0] = 0
-    K_eval = .kernel_from_D2(D2, kern)
-  } else if (!is.null(model$.bind_method) && model$.bind_method == "product") {
-    K_x = model$.K_x_cache
-    u_mask = outer(rep(u, nrow(K_x)), model$.u_centers, "==")
-    mask = u_mask
-    for (j in model$.iw_cov)
-      mask = mask & outer(Z[, j], model$.cov_centers[, j], "==")
-    K_eval = K_x * mask
-  } else {
-    K_eval = kernel_matrix(cbind(u, Z), model$Z, kern)
-  }
-
-  p = as.vector(K_eval %*% model$alpha)
-  d = length(model$beta)
-  if (d > 0) {
-    if (d == 1) {
-      p = p + model$beta[1]
-    } else {
-      p = p + as.vector(null_basis(cbind(u, Z), kern) %*% model$beta)
-    }
-  }
-  p
-}
-
-#' phi_vec: per-subject times. u_vec[j] is the time for subject j.
-phi_vec.kernel_bregman = function(model, u_vec, Z, ...) {
-  Z = atleast_2d(Z)
-  kern = model$kern
-
-  if (!is.null(model$.bind_method) && model$.bind_method == "isotropic") {
-    delta_u2 = outer(u_vec, model$.u_centers, function(a, b) (a - b)^2)
+    delta_u2 = outer(u(Z), model$.u_centers, function(a, b) (a - b)^2)
     D2 = model$.D2_cov_cache + delta_u2
     D2[D2 < 0] = 0
     K_eval = .kernel_from_D2(D2, kern)
   } else if (!is.null(model$.bind_method) && model$.bind_method == "product") {
+    cov = Z[, -1, drop = FALSE]
     K_x = model$.K_x_cache
-    u_mask = outer(u_vec, model$.u_centers, "==")
+    u_mask = outer(u(Z), model$.u_centers, "==")
     mask = u_mask
     for (j in model$.iw_cov)
-      mask = mask & outer(Z[, j], model$.cov_centers[, j], "==")
+      mask = mask & outer(cov[, j], model$.cov_centers[, j], "==")
     K_eval = K_x * mask
   } else {
-    K_eval = kernel_matrix(cbind(u_vec, Z), model$Z, kern)
+    K_eval = kernel_matrix(Z, model$Z, kern)
   }
 
   p = as.vector(K_eval %*% model$alpha)
@@ -696,7 +750,7 @@ phi_vec.kernel_bregman = function(model, u_vec, Z, ...) {
     if (d == 1) {
       p = p + model$beta[1]
     } else {
-      p = p + as.vector(null_basis(cbind(u_vec, Z), kern) %*% model$beta)
+      p = p + as.vector(null_basis(Z, kern) %*% model$beta)
     }
   }
   p
@@ -704,12 +758,12 @@ phi_vec.kernel_bregman = function(model, u_vec, Z, ...) {
 
 
 # ============================================================
-# lambda: hazard rate = dispersion$dchis(phi) / du_bin
+# lambda: hazard rate = dchis(phi) / du_bin
 # Model must have $du_bin (set by fit_lambda).
 # ============================================================
 
-lambda.kernel_bregman = function(model, u, Z, ...) {
-  pmax(model$dispersion$dchis(phi(model, u, Z)) / model$du_bin, 0)
+.lambda.kernel_bregman = function(model, Z, ...) {
+  pmax(.dchis(model$dispersion, .phi(model, Z)) / model$du_bin, 0)
 }
 
 
@@ -718,12 +772,12 @@ lambda.kernel_bregman = function(model, u, Z, ...) {
 # Model must have $predict_gamma (set by fit_gamma).
 # ============================================================
 
-gamma.kernel_bregman = function(model, u, Z, ...) {
-  model$predict_gamma(phi(model, u, Z), Z)
+.gamma.kernel_bregman = function(model, Z, ...) {
+  model$predict_gamma(.phi(model, Z), Z)
 }
 
-gamma_vec.kernel_bregman = function(model, u_vec, Z, ...) {
-  model$predict_gamma(phi_vec(model, u_vec, Z), Z)
+.gamma_vec.kernel_bregman = function(model, Z, ...) {
+  model$predict_gamma(.phi(model, Z), Z)
 }
 
 
@@ -735,93 +789,3 @@ one_step.kernel_bregman = function(model, target_new, target_null_new = NULL, w_
   onestep_bregman(model, target_new, target_null_new, w_new)
 }
 
-
-# ============================================================
-# Legacy compatibility: bind_subjects, eval_phi, eval_phi_vec
-# These support estimate.R / survival.R from the balancing package.
-# ============================================================
-
-bind_subjects = function(model, Z_eval) {
-  Z_eval = atleast_2d(Z_eval)
-  Z_centers = model$Z
-  u_centers = Z_centers[, 1]
-  cov_centers = Z_centers[, -1, drop = FALSE]
-  kern = model$kern
-
-  bound = list(u_centers = u_centers, alpha = model$alpha,
-               beta = model$beta, kern = kern, Z_eval = Z_eval)
-
-  if (inherits(kern, "product_kernel")) {
-    iw_cov = kern$iw[kern$iw > 1] - 1
-    niw_cov = setdiff(1:ncol(cov_centers), iw_cov)
-    bound$K_x = kernel_matrix(Z_eval[, niw_cov, drop = FALSE],
-                              cov_centers[, niw_cov, drop = FALSE], kern$k_x)
-    bound$cov_centers = cov_centers
-    bound$iw_cov = iw_cov
-    bound$method = "product"
-  } else {
-    ktype = attr(kern, "type")
-    if (!is.null(ktype) && ktype %in% c("matern", "gaussian")) {
-      bound$D2_cov = .fast_sqdist(Z_eval, cov_centers)
-      bound$method = "isotropic"
-    } else {
-      bound$Z_centers = Z_centers
-      bound$method = "generic"
-    }
-  }
-  bound
-}
-
-.null_phi = function(bound, Z_pred) {
-  d = length(bound$beta)
-  if (d == 0) return(0)
-  if (d == 1) return(bound$beta[1])
-  as.vector(null_basis(Z_pred, bound$kern) %*% bound$beta)
-}
-
-eval_phi = function(bound, u, idx = NULL) {
-  if (bound$method == "isotropic") {
-    D2_cov = if (is.null(idx)) bound$D2_cov else bound$D2_cov[idx, , drop = FALSE]
-    delta_u2 = (u - bound$u_centers)^2
-    D2 = sweep(D2_cov, 2, delta_u2, "+"); D2[D2 < 0] = 0
-    K = .kernel_from_D2(D2, bound$kern)
-  } else if (bound$method == "product") {
-    K_x = if (is.null(idx)) bound$K_x else bound$K_x[idx, , drop = FALSE]
-    n_eval = nrow(K_x)
-    u_mask = outer(rep(u, n_eval), bound$u_centers, "==")
-    mask = u_mask
-    Z_ev = if (is.null(idx)) bound$Z_eval else bound$Z_eval[idx, , drop = FALSE]
-    for (j in bound$iw_cov)
-      mask = mask & outer(Z_ev[, j], bound$cov_centers[, j], "==")
-    K = K_x * mask
-  } else {
-    Z_ev = if (is.null(idx)) bound$Z_eval else bound$Z_eval[idx, , drop = FALSE]
-    K = kernel_matrix(cbind(u, Z_ev), bound$Z_centers, bound$kern)
-  }
-  phi = as.vector(K %*% bound$alpha)
-  Z_ev = if (is.null(idx)) bound$Z_eval else bound$Z_eval[idx, , drop = FALSE]
-  phi + .null_phi(bound, cbind(u, Z_ev))
-}
-
-eval_phi_vec = function(bound, u_vec, idx = NULL) {
-  if (bound$method == "isotropic") {
-    D2_cov = if (is.null(idx)) bound$D2_cov else bound$D2_cov[idx, , drop = FALSE]
-    delta_u2 = outer(u_vec, bound$u_centers, function(a, b) (a - b)^2)
-    D2 = D2_cov + delta_u2; D2[D2 < 0] = 0
-    K = .kernel_from_D2(D2, bound$kern)
-  } else if (bound$method == "product") {
-    K_x = if (is.null(idx)) bound$K_x else bound$K_x[idx, , drop = FALSE]
-    u_mask = outer(u_vec, bound$u_centers, "==")
-    mask = u_mask
-    Z_ev = if (is.null(idx)) bound$Z_eval else bound$Z_eval[idx, , drop = FALSE]
-    for (j in bound$iw_cov)
-      mask = mask & outer(Z_ev[, j], bound$cov_centers[, j], "==")
-    K = K_x * mask
-  } else {
-    Z_ev = if (is.null(idx)) bound$Z_eval else bound$Z_eval[idx, , drop = FALSE]
-    K = kernel_matrix(cbind(u_vec, Z_ev), bound$Z_centers, bound$kern)
-  }
-  phi = as.vector(K %*% bound$alpha)
-  Z_ev = if (is.null(idx)) bound$Z_eval else bound$Z_eval[idx, , drop = FALSE]
-  phi + .null_phi(bound, cbind(u_vec, Z_ev))
-}

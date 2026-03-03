@@ -102,7 +102,8 @@ test_that("quadratic_dispersion gives correct phi", {
 
   # Also: predictions at new points should match
   Z_test = matrix(rnorm(10 * p), 10, p)
-  pred = predict_phi(fit, Z_test)
+  phi  = \(Z) .phi(fit, Z)
+  pred = phi(Z_test)
   K_test = kernel_matrix(Z_test, Z, kern)
   B_test = null_basis(Z_test, kern)
   pred_check = as.vector(K_test %*% sol[1:n]) + as.vector(B_test %*% sol[(n+1):(n+ncol(B))])

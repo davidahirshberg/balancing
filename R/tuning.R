@@ -1,51 +1,30 @@
 ## Tuning: pluggable regularization selection.
 ##
 ## A tuning strategy provides $select(ctx), where ctx is a tuning context
-## with lazy accessors for different selection criteria. Each accessor
-## computes and caches its result on first call — strategies only pay for
-## what they use.
+## with precomputed vectors from the grid sweep.
 ##
-## Context accessors:
-##   ctx$eta_grid    — the regularization grid (always available)
-##   ctx$n           — sample size (always available)
-##   ctx$dir_val()   — plug-in functional at each grid point
-##   ctx$dir_se()    — SE of plug-in functional
-##   ctx$loo_scores() — LOO CV loss at each grid point
-##   ctx$models()    — list of fitted models (if available)
+## Context fields:
+##   ctx$eta_grid      — the regularization grid
+##   ctx$n             — sample size
+##   ctx$dir_val()     — plug-in functional at each grid point
+##   ctx$dir_se()      — SE of plug-in functional
+##   ctx$loo_scores()  — CV loss at each grid point
 ##
 ## Or the tuning argument is a bare number / function, coerced by as_tuning().
 
 # ============================================================
-# Tuning context: lazy-cached bag of closures
+# Tuning context
 # ============================================================
 
-#' Build a tuning context from lazy computation closures.
+#' Build a tuning context from precomputed grid sweep results.
 #'
 #' @param eta_grid The regularization grid.
 #' @param n Sample size.
-#' @param ... Named closures (zero-argument functions) for lazy computation.
-#'   Common: dir_val, dir_se, loo_scores, models.
-#' @return A tuning context object.
+#' @param ... Named closures or values for the context.
+#'   Common: dir_val, dir_se, loo_scores (closures returning vectors).
+#' @return A tuning context (list).
 tuning_context = function(eta_grid, n, ...) {
-  closures = list(...)
-  cache = new.env(parent = emptyenv())
-
-  ctx = list(eta_grid = eta_grid, n = n)
-
-  # Build a lazy accessor for each closure
-  for (nm in names(closures)) {
-    fn = closures[[nm]]
-    local({
-      name = nm
-      compute = fn
-      ctx[[name]] <<- function() {
-        if (!exists(name, envir = cache)) cache[[name]] = compute()
-        cache[[name]]
-      }
-    })
-  }
-
-  ctx
+  c(list(eta_grid = eta_grid, n = n), list(...))
 }
 
 # ============================================================
