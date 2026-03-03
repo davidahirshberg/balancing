@@ -318,26 +318,33 @@ aggregate_dr = function(mps, lambda_fits, gamma_results, fold_estimates,
 #' @param horizon Time horizon.
 #' @param gamma_disp_fn Factory: r -> gamma dispersion. Default target_scaled_entropy.
 #' @param gamma_base Base dispersion record for correction weights. Default entropy_base (TSE).
+#' @param mps Optional pre-computed mesh projections (skips mesh_project).
+#' @param lambda_fits Optional pre-fitted lambda results per fold (skips fit_lambda).
+#' @param gamma_results Optional pre-fitted gamma results per fold (skips fit_gamma).
 #' @return A dr_result S3 object.
 survival_effect = function(observations, kern, estimand, lambda_disp,
                            eta_lam, eta_gam, horizon,
                            M_train = 15, n_folds = 2, Q_comp = 50,
                            discrete = FALSE, log = null_logger,
                            gamma_disp_fn = target_scaled_entropy,
-                           gamma_base = entropy_base) {
-  mps = mesh_project(observations, horizon, M_train, n_folds, kern, discrete)
+                           gamma_base = entropy_base,
+                           mps = NULL, lambda_fits = NULL, gamma_results = NULL) {
+  if (is.null(mps))
+    mps = mesh_project(observations, horizon, M_train, n_folds, kern, discrete)
 
   # Grid for plug-in estimand and compensator evaluation
   grid = if (discrete) discrete_grid(mps[[1]]$mesh, du = mps[[1]]$du_bin) else continuous_grid(horizon, Q_comp)
 
-  lambda_fits = lapply(seq_along(mps), function(ff)
-    fit_lambda(mps[[ff]], kern, eta_lam, lambda_disp,
-               log = indent(log, sprintf("fold %d/%d lambda", ff, length(mps)))))
+  if (is.null(lambda_fits))
+    lambda_fits = lapply(seq_along(mps), function(ff)
+      fit_lambda(mps[[ff]], kern, eta_lam, lambda_disp,
+                 log = indent(log, sprintf("fold %d/%d lambda", ff, length(mps)))))
 
-  gamma_results = lapply(seq_along(mps), function(ff)
-    fit_gamma(mps[[ff]], lambda_fits[[ff]], kern, eta_gam, estimand,
-              gamma_disp_fn = gamma_disp_fn, gamma_base = gamma_base,
-              log = indent(log, sprintf("fold %d/%d", ff, length(mps)))))
+  if (is.null(gamma_results))
+    gamma_results = lapply(seq_along(mps), function(ff)
+      fit_gamma(mps[[ff]], lambda_fits[[ff]], kern, eta_gam, estimand,
+                gamma_disp_fn = gamma_disp_fn, gamma_base = gamma_base,
+                log = indent(log, sprintf("fold %d/%d", ff, length(mps)))))
 
   fold_estimates = lapply(seq_along(mps), function(ff)
     estimate(mps[[ff]], lambda_fits[[ff]], gamma_results[[ff]], estimand, grid))
