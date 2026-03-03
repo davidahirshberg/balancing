@@ -83,6 +83,12 @@ surv_prob = function(dLambda, grid = NULL) {
     # int lambda du = sum w_k * lambda_k = sum (w_k / du) * dLambda_k
     return(as.vector(exp(-(dLambda %*% (grid$weights / grid$du)))))
   }
+  n_over = sum(dLambda >= 1)
+  if (n_over > 0)
+    stop(structure(
+      list(message  = sprintf("dLambda >= 1 at %d entries; dispersion unbounded (use softplus or entropy)", n_over),
+           n_over   = n_over),
+      class = c("dLambda_overflow", "error", "condition")))
   S = rep(1, n)
   for (k in 1:M) S = S * (1 - dLambda[, k])
   S
