@@ -3,7 +3,7 @@
 ## Per-fold primitives:
 ##   fit_lambda(mp, kern, eta, lambda_disp, warm, log)
 ##   fit_gamma(mp, lambda_fit, kern, eta, estimand, gamma_disp_fn, gamma_base, warm, log)
-##   estimate(mp, lambda_fit, gamma_result, estimand, Q_comp, discrete)
+##   estimate(mp, lambda_fit, gamma_result, estimand, grid)
 ##
 ## Aggregation:
 ##   aggregate_dr(mps, fold_estimates, ...) -> dr_result
@@ -20,8 +20,7 @@
 
 # Build the gamma target measure from the estimand's dpsi_grid.
 gamma_measure = function(estimand, predict_haz, mp, w_eval = NULL) {
-  emb = estimand$dpsi_grid(predict_haz, mp$eval_Z, mp$mesh_u, mp$mesh,
-                            length(mp$mesh), mp$du_bin)
+  emb = estimand$dpsi_grid(predict_haz, mp$eval_Z, mp$mesh_u, mp$train_grid)
   if (!is.null(w_eval)) {
     n_eval = nrow(atleast_2d(mp$eval_Z))
     n_per_subj = length(emb$r) %/% n_eval
@@ -31,32 +30,31 @@ gamma_measure = function(estimand, predict_haz, mp, w_eval = NULL) {
 }
 
 # Compute plug-in (direct) estimand.
-compute_direct = function(phi, lambda_disp, estimand, mp, discrete) {
+compute_direct = function(phi, lambda_disp, estimand, mp, grid) {
   dchis = \(p) .dchis(lambda_disp, p)
+
+  # predict_haz on training mesh: model output = dLambda on training grid.
+  # Used by gamma_measure / make_dchis_gamma_ts (always on training mesh).
   predict_haz = function(k, Z_ev) dchis(phi(cbind(mp$mesh[k], Z_ev)))
-  if (discrete) {
-    direct = estimand$direct_discrete(predict_haz, mp$eval_Z, length(mp$mesh), mp$du_bin)
-  } else {
-    Q_surv = 100
-    predict_haz_cts = function(k, Z_ev)
-      pmax(dchis(phi(cbind((k - 1) * mp$horizon / Q_surv, Z_ev))) / mp$du_bin, 0)
-    direct = estimand$direct_cts(predict_haz_cts, mp$eval_Z, mp$horizon, Q_surv)
-  }
+
+  # predict_dLambda on evaluation grid: scale by du_eval / du_bin.
+  # For discrete, eval grid = train grid, so scale = 1.
+  # For continuous, eval grid is finer than train grid.
+  scale = grid$du / mp$du_bin
+  predict_dLambda = function(k, Z_ev)
+    pmax(dchis(phi(cbind(grid$points[k], Z_ev))) * scale, 0)
+
+  direct = estimand$direct(predict_dLambda, mp$eval_Z, grid)
   list(direct = direct, predict_haz = predict_haz)
 }
 
 # DR correction terms: compensator integral + Dirac at event times.
 correction_terms = function(mp, lambda_fit_, gamma_fit_, lambda_disp, dchis_gamma,
-                            Q_comp, discrete) {
-  if (discrete) {
-    comp = compensator_discrete(lambda_fit_, gamma_fit_,
-                                mp$T_obs_eval, mp$D_eval, mp$mesh,
-                                lambda_disp, dchis_gamma, mp$eval_Z)
-  } else {
-    comp = compensator_simpson(lambda_fit_, gamma_fit_,
-                               mp$T_obs_eval, mp$D_eval, mp$eval_Z, mp$horizon, Q_comp,
-                               lambda_disp, dchis_gamma, mp$du_bin)
-  }
+                            comp_grid) {
+  comp = compensator(lambda_fit_, gamma_fit_,
+                     mp$T_obs_eval, mp$eval_Z,
+                     comp_grid, lambda_disp, dchis_gamma, mp$du_bin)
+
   M_train = length(mp$mesh)
   dirac = rep(0, mp$n_eval)
   events = which(mp$D_eval == 1 & mp$T_obs_eval <= mp$horizon)
@@ -81,18 +79,20 @@ correction_terms = function(mp, lambda_fit_, gamma_fit_, lambda_disp, dchis_gamm
 #'
 #' @param gamma_base  Base dispersion record. Default entropy_base (gives TSE).
 make_dchis_gamma_ts = function(predict_haz, estimand_obj, eval_Z,
-                                M_train, du_bin, gamma_base = entropy_base) {
+                                train_grid, gamma_base = entropy_base) {
+  M_train = train_grid$M
+  du_bin = train_grid$du
   n_eval = nrow(atleast_2d(eval_Z))
   eval_hash = apply(eval_Z, 1, paste0, collapse = "|")
   lookup = setNames(seq_len(n_eval), eval_hash)
-  has_per_arm = !is.null(estimand_obj$dot_psi_arm_discrete)
+  has_per_arm = !is.null(estimand_obj$dot_psi_arm)
   if (has_per_arm) {
-    dp1 = estimand_obj$dot_psi_arm_discrete(predict_haz, eval_Z, M_train, du_bin, arm = 1)
-    dp0 = estimand_obj$dot_psi_arm_discrete(predict_haz, eval_Z, M_train, du_bin, arm = 0)
+    dp1 = estimand_obj$dot_psi_arm(predict_haz, eval_Z, train_grid, arm = 1)
+    dp0 = estimand_obj$dot_psi_arm(predict_haz, eval_Z, train_grid, arm = 0)
     r1_mat = r0_mat = matrix(NA_real_, n_eval, M_train)
     for (k in 1:M_train) { r1_mat[, k] = dp1(k); r0_mat[, k] = -dp0(k) }
   } else {
-    dpsi = estimand_obj$dot_psi_Z_discrete(predict_haz, eval_Z, M_train, du_bin)
+    dpsi = estimand_obj$dot_psi_Z(predict_haz, eval_Z, train_grid)
     r_mat = matrix(NA_real_, n_eval, M_train)
     for (k in 1:M_train) r_mat[, k] = dpsi(k)
   }
@@ -152,11 +152,15 @@ mesh_project = function(observations, horizon, M_train, n_folds, kern, discrete 
 
     eval_Z = Z[eval_idx, , drop = FALSE]
 
+    # Training grid: always discrete (model output = dLambda on mesh points)
+    train_grid = discrete_grid(lambda_train$mesh, du = lambda_train$du)
+
     list(lambda_idx = lambda_idx, gamma_idx = gamma_idx, eval_idx = eval_idx,
          stacked_lambda = stacked_lambda, stacked_gamma = stacked_gamma,
          mesh = lambda_train$mesh, du_bin = stacked_lambda$du_bin,
          mesh_u = unique(stacked_gamma$u_pool),
          K_lambda = K_lambda, tgt_lambda = tgt_lambda,
+         train_grid = train_grid,
          eval_Z = eval_Z,
          T_obs_eval = T_obs[eval_idx], D_eval = D[eval_idx],
          n_eval = length(eval_idx),
@@ -201,14 +205,12 @@ fit_gamma = function(mp, lambda_fit, kern, eta, estimand,
                      gamma_target = NULL, gamma_target_null = NULL,
                      w = NULL,
                      log = null_logger) {
-  M_train = length(mp$mesh)
-
   phi   = \(Z) .phi(lambda_fit, Z)
   dchis = \(p) .dchis(lambda_fit$dispersion, p)
   predict_haz = function(k, Z_ev) dchis(phi(cbind(mp$mesh[k], Z_ev)))
 
   dchis_gamma = make_dchis_gamma_ts(predict_haz, estimand, mp$eval_Z,
-                                     M_train, mp$du_bin,
+                                     mp$train_grid,
                                      gamma_base = gamma_base)
 
   if (is.null(gamma_target)) {
@@ -238,18 +240,19 @@ fit_gamma = function(mp, lambda_fit, kern, eta, estimand,
 #' @param mp A mesh_projection.
 #' @param lambda_fit Output of fit_lambda.
 #' @param gamma_result Output of fit_gamma.
+#' @param grid Evaluation grid (discrete_grid or continuous_grid).
 #' @return List with $direct, $correction, $terms, $noise_var, $events.
-estimate = function(mp, lambda_fit, gamma_result, estimand, Q_comp, discrete) {
+estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
   lambda_disp = lambda_fit$dispersion
   lambda_fit_ = .bind(lambda_fit, mp$eval_Z)
   gamma_fit_ = .bind(gamma_result$gamma_fit, mp$eval_Z)
   phi = \(Z) .phi(lambda_fit, Z)
 
-  dr = compute_direct(phi, lambda_disp, estimand, mp, discrete)
+  dr = compute_direct(phi, lambda_disp, estimand, mp, grid)
 
   ct = correction_terms(mp, lambda_fit_, gamma_fit_,
                          lambda_disp, gamma_result$dchis_gamma,
-                         Q_comp, discrete)
+                         grid)
 
   list(direct = dr$direct, correction = ct$correction,
        terms = dr$direct + ct$correction,
@@ -269,7 +272,7 @@ estimate = function(mp, lambda_fit, gamma_result, estimand, Q_comp, discrete) {
 #' @return A dr_result S3 object.
 aggregate_dr = function(mps, lambda_fits, gamma_results, fold_estimates,
                         kern, eta_gam, lambda_disp, estimand,
-                        horizon, Q_comp, discrete,
+                        horizon, grid,
                         gamma_disp_fn = target_scaled_entropy,
                         gamma_base = entropy_base) {
   n = sum(sapply(mps, `[[`, "n_eval"))
@@ -295,7 +298,7 @@ aggregate_dr = function(mps, lambda_fits, gamma_results, fold_estimates,
          n = n,
          kern = kern, eta_gam = eta_gam, lambda_disp = lambda_disp,
          estimand = estimand,
-         horizon = horizon, Q_comp = Q_comp, discrete = discrete,
+         horizon = horizon, grid = grid,
          gamma_disp_fn = gamma_disp_fn, gamma_base = gamma_base),
     class = "dr_result")
 }
@@ -324,6 +327,9 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
                            gamma_base = entropy_base) {
   mps = mesh_project(observations, horizon, M_train, n_folds, kern, discrete)
 
+  # Grid for plug-in estimand and compensator evaluation
+  grid = if (discrete) discrete_grid(mps[[1]]$mesh, du = mps[[1]]$du_bin) else continuous_grid(horizon, Q_comp)
+
   lambda_fits = lapply(seq_along(mps), function(ff)
     fit_lambda(mps[[ff]], kern, eta_lam, lambda_disp,
                log = indent(log, sprintf("fold %d/%d lambda", ff, length(mps)))))
@@ -334,13 +340,11 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
               log = indent(log, sprintf("fold %d/%d", ff, length(mps)))))
 
   fold_estimates = lapply(seq_along(mps), function(ff)
-    estimate(mps[[ff]], lambda_fits[[ff]], gamma_results[[ff]], estimand,
-             Q_comp, discrete))
+    estimate(mps[[ff]], lambda_fits[[ff]], gamma_results[[ff]], estimand, grid))
 
   aggregate_dr(mps, lambda_fits, gamma_results, fold_estimates,
                kern = kern, eta_gam = eta_gam, lambda_disp = lambda_disp,
-               estimand = estimand, horizon = horizon,
-               Q_comp = Q_comp, discrete = discrete,
+               estimand = estimand, horizon = horizon, grid = grid,
                gamma_disp_fn = gamma_disp_fn, gamma_base = gamma_base)
 }
 
@@ -354,7 +358,7 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
   n = obj$n
   kern = obj$kern; lambda_disp = obj$lambda_disp
   estimand = obj$estimand; horizon = obj$horizon
-  Q_comp = obj$Q_comp; discrete = obj$discrete; eta_gam = obj$eta_gam
+  grid = obj$grid; eta_gam = obj$eta_gam
   gamma_disp_fn = obj$gamma_disp_fn
 
   dchis_lam = \(p) .dchis(lambda_disp, p)
@@ -366,10 +370,8 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
   # Pre-compute cross-kernel matrices for gamma target projection
   K_cross_gamma = lapply(seq_along(obj$mps), function(ff) {
     mp = obj$mps[[ff]]
-    M_train = length(mp$mesh)
     dummy_haz = function(k, Z_ev) rep(0, nrow(atleast_2d(Z_ev)))
-    emb_template = estimand$dpsi_grid(dummy_haz, mp$eval_Z, mp$mesh_u,
-                                       mp$mesh, M_train, mp$du_bin)
+    emb_template = estimand$dpsi_grid(dummy_haz, mp$eval_Z, mp$mesh_u, mp$train_grid)
     kernel_matrix(mp$stacked_gamma$Z_pool, emb_template$Z, kern)
   })
 
@@ -383,7 +385,6 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
       mp = obj$mps[[ff]]
       lam_fit = obj$lambda_fits[[ff]]
       gam_res = obj$gamma_results[[ff]]
-      M_train = length(mp$mesh)
       flog = indent(blog, sprintf("fold %d/%d", ff, length(obj$mps)))
 
       w_pool_lambda = w_subj[mp$lambda_idx][mp$i_pool_lambda]
@@ -424,11 +425,11 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
       lambda_boot_ = .bind(lambda_boot, mp$eval_Z)
       gamma_boot_ = .bind(gam_b$gamma_fit, mp$eval_Z)
 
-      dr_b = compute_direct(phi_boot, lambda_disp, estimand, mp, discrete)
+      dr_b = compute_direct(phi_boot, lambda_disp, estimand, mp, grid)
 
       ct_b = correction_terms(mp, lambda_boot_, gamma_boot_,
                                lambda_disp, gam_res$dchis_gamma,
-                               Q_comp, discrete)
+                               grid)
 
       dr_terms_b = dr_b$direct + ct_b$correction
       all_terms = c(all_terms, w_eval * dr_terms_b)

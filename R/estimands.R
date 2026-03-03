@@ -5,30 +5,22 @@
 ##   se(mu1, mu0, n)                   — SE of direct term (for Lepski)
 ##   dr(mu1, mu0, Y, W, gamma1, gamma0) — DR-corrected estimate
 ##
-## Survival estimands provide two levels of interface:
+## Survival estimands provide:
 ##
-##   LOW-LEVEL (building blocks, don't know about treatment arms):
-##     psi(haz_fn, Q, du)               — outcome functional given a haz_fn
-##     dot_psi(haz_fn, Q, du)            — Gateaux derivative given a haz_fn
-##     psi_discrete(h_fn, M)             — discrete analog
-##     dot_psi_discrete(h_fn, M)         — discrete analog
+##   direct(predict_dLambda, eval_Z, grid) — plug-in estimand per subject
+##   dot_psi_Z(predict_dLambda, eval_Z, grid)  — function(k) giving n-vector
+##   dpsi_grid(predict_dLambda, eval_Z, mesh_u, train_grid)
+##                                              — dpsi evaluation grid (Z, r)
 ##
-##   HIGH-LEVEL (what bregbal_surv calls; knows about treatment arms):
-##     direct_discrete(predict_haz, eval_Z, M)       — plug-in estimand per subject
-##     dot_psi_Z_discrete(predict_haz, eval_Z, M)    — function(k) giving n-vector
-##     direct_cts(predict_haz, eval_Z, horizon, Q)
-##     dot_psi_Z_cts(predict_haz, eval_Z, horizon, Q)
-##     dpsi_grid(predict_haz, eval_Z, mesh_u, mesh, M_train, du_bin)
-##                                                    — dpsi evaluation grid (Z, r)
-##
-##   predict_haz(k, Z) takes mesh index k and covariate matrix Z (with
-##   treatment in col 1), returns n-vector of hazard values.
+##   predict_dLambda(k, Z) takes grid index k and covariate matrix Z (with
+##   treatment in col 1), returns n-vector of hazard increments dLambda_k.
 ##   The estimand evaluates at whatever counterfactual Z it needs.
+##
+##   All survival operations use the product integral and grid operations
+##   from grid.R, unifying discrete and continuous time.
 ##
 ##   The estimand provides W_fn(A) returning the per-subject sign vector.
 ##   The pipeline constructs signflip(gamma_dispersion, W_fn(A)) automatically.
-##   Alternative: use signflip_r(r) or target_scaled_entropy(r) from the
-##   dpsi_grid output for per-level feasible dispersions.
 ##
 ## Both carry a $type field ("single_outcome" or "survival") for dispatch.
 
@@ -145,64 +137,10 @@ rr_estimand = function() {
 # Survival estimands (spinoff3)
 # ============================================================
 
-# ---- Low-level survival building blocks ----
-# These compute psi and dot_psi given an h_fn. They don't know about
-# treatment arms — the caller provides h_fn evaluated at whatever Z it wants.
-
-.surv_prob_psi = function(haz_fn, Q, du) {
-  running = rep(0, length(haz_fn(1)))
-  h_prev = haz_fn(1)
-  for (k in 2:(Q + 1)) {
-    h_curr = haz_fn(k)
-    running = running + (h_prev + h_curr) / 2 * du
-    h_prev = h_curr
-  }
-  exp(-running)
-}
-
-.surv_prob_psi_discrete = function(h_fn, M) {
-  S = rep(1, length(h_fn(1)))
-  for (k in 1:M) S = S * (1 - h_fn(k))
-  S
-}
-
-.surv_prob_dot_psi_discrete = function(h_fn, M) {
-  S = .surv_prob_psi_discrete(h_fn, M)
-  h_vals = matrix(0, length(S), M)
-  for (k in 1:M) h_vals[, k] = h_fn(k)
-  function(k) -S / (1 - h_vals[, k])
-}
-
-.surv_prob_dot_psi = function(haz_fn, Q, du) {
-  S = .surv_prob_psi(haz_fn, Q, du)
-  function(u) -S
-}
-
-.surv_prob_surv_curve = function(haz_fn, Q, du) {
-  n = length(haz_fn(1))
-  S = matrix(1, n, Q + 1)
-  running = rep(0, n)
-  h_prev = haz_fn(1)
-  for (k in 2:(Q + 1)) {
-    h_curr = haz_fn(k)
-    running = running + (h_prev + h_curr) / 2 * du
-    S[, k] = exp(-running)
-    h_prev = h_curr
-  }
-  S
-}
-
-# ---- High-level survival estimand constructors ----
-# These know about treatment arms and provide the interface bregbal_surv calls.
-#
-# predict_haz(k, Z): takes mesh index k and covariate matrix Z (treatment in
-#   col 1), returns n-vector of hazard values. The estimand evaluates at
-#   whatever counterfactual Z it needs.
-
 #' Survival probability TSM: E[S(tau | a, X)].
 #'
-#' dot_psi_Z(u, w, x) = -S(tau | a, x) / (1 - h_u(a, x)).
-#' Does not depend on observed treatment w.
+#' direct: S(tau | a, X) via product integral.
+#' dot_psi_Z(k): -S(tau | a, X) / (1 - dLambda_k(a, X)).
 surv_tsm = function(arm) {
   list(
     name = paste0("survival.probability.tsm", arm),
@@ -210,56 +148,28 @@ surv_tsm = function(arm) {
     arm = arm,
     W_fn = function(A) as.numeric(if (arm == 1) A else 1 - A),
 
-    # Low-level (for direct use when h_fn already evaluated at the right Z)
-    psi = .surv_prob_psi,
-    psi_discrete = .surv_prob_psi_discrete,
-    dot_psi = .surv_prob_dot_psi,
-    dot_psi_discrete = .surv_prob_dot_psi_discrete,
-    surv_curve = .surv_prob_surv_curve,
-
-    # High-level: plug-in E[S(tau | a, X)]
-    direct_discrete = function(predict_haz, eval_Z, M, du = NULL) {
+    direct = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
-      h_fn = function(k) predict_haz(k, Za)
-      .surv_prob_psi_discrete(h_fn, M)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, Za), grid$M)
+      surv_prob(dL, grid)
     },
 
-    # High-level: dot_psi_Z evaluated at (a, X) for all subjects
-    dot_psi_Z_discrete = function(predict_haz, eval_Z, M, du = NULL) {
+    dot_psi_Z = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
-      h_fn = function(k) predict_haz(k, Za)
-      .surv_prob_dot_psi_discrete(h_fn, M)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, Za), grid$M)
+      surv_prob_dot(dL, grid)
     },
 
-    # Continuous versions
-    direct_cts = function(predict_haz, eval_Z, horizon, Q) {
+    dpsi_grid = function(predict_dLambda, eval_Z, mesh_u, train_grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
-      du = horizon / Q
-      h_fn = function(k) predict_haz(k, Za)
-      .surv_prob_psi(h_fn, Q, du)
-    },
-
-    dot_psi_Z_cts = function(predict_haz, eval_Z, horizon, Q) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      Za = cbind(arm, eval_X)
-      du = horizon / Q
-      h_fn = function(k) predict_haz(k, Za)
-      .surv_prob_dot_psi(h_fn, Q, du)
-    },
-
-    # dpsi evaluation grid: builds Z points and r weights for
-    # the gamma functional's measure. The estimand owns Z manipulation.
-    dpsi_grid = function(predict_haz, eval_Z, mesh_u, mesh, M_train, du_bin) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      mesh_k = match(mesh_u, mesh)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, Za), train_grid$M)
+      dp = surv_prob_dot(dL, train_grid)
+      mesh_k = match(mesh_u, train_grid$points)
       n_eval = nrow(eval_Z)
       n_mu = length(mesh_u)
-      Za = cbind(arm, eval_X)
-      h_fn = function(k) predict_haz(k, Za)
-      dp = .surv_prob_dot_psi_discrete(h_fn, M_train)
       r_subj = array(NA_real_, c(n_eval, n_mu))
       for (j in seq_along(mesh_u)) r_subj[, j] = dp(mesh_k[j])
       Z_ctf = do.call(rbind, lapply(seq_along(mesh_u), function(j) {
@@ -274,75 +184,46 @@ surv_tsm = function(arm) {
 
 #' Survival probability ATE: E[S(tau | 1, X)] - E[S(tau | 0, X)].
 #'
-#' dot_psi_Z(u, w, x) = -S(tau|1,x)/(1-h_u(1,x)) + S(tau|0,x)/(1-h_u(0,x)).
-#' Does not depend on observed treatment w.
+#' direct: S(tau|1,X) - S(tau|0,X) via product integral.
+#' dot_psi_Z(k): -S(tau|1,x)/(1-dL_k(1,x)) + S(tau|0,x)/(1-dL_k(0,x)).
 surv_ate = function() {
   list(
     name = "survival.probability",
     type = "survival",
     W_fn = function(A) 2 * A - 1,
 
-    # Low-level (kept for backward compat and building blocks)
-    psi = .surv_prob_psi,
-    psi_discrete = .surv_prob_psi_discrete,
-    dot_psi = .surv_prob_dot_psi,
-    dot_psi_discrete = .surv_prob_dot_psi_discrete,
-    surv_curve = .surv_prob_surv_curve,
-
-    # High-level: E[S(tau|1,X)] - E[S(tau|0,X)]
-    direct_discrete = function(predict_haz, eval_Z, M, du = NULL) {
+    direct = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      .surv_prob_psi_discrete(h_fn_1, M) - .surv_prob_psi_discrete(h_fn_0, M)
+      dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), grid$M)
+      dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), grid$M)
+      surv_prob(dL1, grid) - surv_prob(dL0, grid)
     },
 
-    # dot_psi_Z = deriv of S(tau|1,X) minus deriv of S(tau|0,X)
-    dot_psi_Z_discrete = function(predict_haz, eval_Z, M, du = NULL) {
+    dot_psi_Z = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      d1 = .surv_prob_dot_psi_discrete(h_fn_1, M)
-      d0 = .surv_prob_dot_psi_discrete(h_fn_0, M)
+      dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), grid$M)
+      dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), grid$M)
+      d1 = surv_prob_dot(dL1, grid)
+      d0 = surv_prob_dot(dL0, grid)
       function(k) d1(k) - d0(k)
     },
 
-    # Per-arm dot_psi (for gamma embedding with ATE).
-    dot_psi_arm_discrete = function(predict_haz, eval_Z, M, du = NULL, arm) {
+    # Per-arm dot_psi (for gamma embedding with ATE sign-flip).
+    dot_psi_arm = function(predict_dLambda, eval_Z, grid, arm) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      h_fn = function(k) predict_haz(k, cbind(arm, eval_X))
-      .surv_prob_dot_psi_discrete(h_fn, M)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, cbind(arm, eval_X)), grid$M)
+      surv_prob_dot(dL, grid)
     },
 
-    direct_cts = function(predict_haz, eval_Z, horizon, Q) {
+    dpsi_grid = function(predict_dLambda, eval_Z, mesh_u, train_grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      du = horizon / Q
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      .surv_prob_psi(h_fn_1, Q, du) - .surv_prob_psi(h_fn_0, Q, du)
-    },
-
-    dot_psi_Z_cts = function(predict_haz, eval_Z, horizon, Q) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      du = horizon / Q
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      d1 = .surv_prob_dot_psi(h_fn_1, Q, du)
-      d0 = .surv_prob_dot_psi(h_fn_0, Q, du)
-      function(u) d1(u) - d0(u)
-    },
-
-    # dpsi evaluation grid: builds Z points and r weights for
-    # the gamma functional's measure. ATE: both arms stacked.
-    dpsi_grid = function(predict_haz, eval_Z, mesh_u, mesh, M_train, du_bin) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      mesh_k = match(mesh_u, mesh)
+      dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), train_grid$M)
+      dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), train_grid$M)
+      dp1 = surv_prob_dot(dL1, train_grid)
+      dp0 = surv_prob_dot(dL0, train_grid)
+      mesh_k = match(mesh_u, train_grid$points)
       n_eval = nrow(eval_Z)
       n_mu = length(mesh_u)
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      dp1 = .surv_prob_dot_psi_discrete(h_fn_1, M_train)
-      dp0 = .surv_prob_dot_psi_discrete(h_fn_0, M_train)
       r1_subj = r0_subj = array(NA_real_, c(n_eval, n_mu))
       for (j in seq_along(mesh_u)) {
         r1_subj[, j] = dp1(mesh_k[j])
@@ -363,64 +244,7 @@ surv_prob_ate = function() surv_ate()
 surv_prob_tsm = function(arm) surv_tsm(arm)
 surv_prob_estimand = function() surv_ate()
 
-# ---- Low-level RMST building blocks ----
-
-.rmst_psi = function(haz_fn, Q, du) {
-  n = length(haz_fn(1))
-  running_cumhaz = rep(0, n)
-  running_rmst = rep(0, n)
-  S_prev = rep(1, n)
-  h_prev = haz_fn(1)
-  for (k in 2:(Q + 1)) {
-    h_curr = haz_fn(k)
-    running_cumhaz = running_cumhaz + (h_prev + h_curr) / 2 * du
-    S_curr = exp(-running_cumhaz)
-    running_rmst = running_rmst + (S_prev + S_curr) / 2 * du
-    S_prev = S_curr
-    h_prev = h_curr
-  }
-  running_rmst
-}
-
-.rmst_dot_psi = function(haz_fn, Q, du) {
-  S_mat = .surv_prob_surv_curve(haz_fn, Q, du)
-  eval_grid = (0:Q) * du
-  cum = matrix(0, nrow(S_mat), Q + 1)
-  for (k in 2:(Q + 1))
-    cum[, k] = cum[, k - 1] + (S_mat[, k - 1] + S_mat[, k]) / 2 * du
-  total = cum[, Q + 1]
-  function(u) {
-    k = pmax(findInterval(u, eval_grid, rightmost.closed = TRUE), 1)
-    -(total - cum[, k])
-  }
-}
-
-.rmst_psi_discrete = function(h_fn, M, du) {
-  n = length(h_fn(1))
-  S = rep(1, n)
-  rmst = rep(0, n)
-  for (k in 1:M) {
-    S = S * (1 - h_fn(k))
-    rmst = rmst + S * du
-  }
-  rmst
-}
-
-.rmst_dot_psi_discrete = function(h_fn, M, du) {
-  n = length(h_fn(1))
-  S_vec = matrix(0, n, M)
-  h_vals = matrix(0, n, M)
-  S = rep(1, n)
-  for (k in 1:M) {
-    h_vals[, k] = h_fn(k)
-    S = S * (1 - h_vals[, k])
-    S_vec[, k] = S
-  }
-  tail = matrix(0, n, M)
-  tail[, M] = S_vec[, M] * du
-  for (k in (M - 1):1) tail[, k] = tail[, k + 1] + S_vec[, k] * du
-  function(k) -tail[, k] / (1 - h_vals[, k])
-}
+# ---- RMST estimands ----
 
 #' RMST TSM: E[int_0^tau S(u | a, X) du].
 rmst_tsm = function(arm) {
@@ -430,51 +254,28 @@ rmst_tsm = function(arm) {
     arm = arm,
     W_fn = function(A) as.numeric(if (arm == 1) A else 1 - A),
 
-    psi = .rmst_psi,
-    psi_discrete = .rmst_psi_discrete,
-    dot_psi = .rmst_dot_psi,
-    dot_psi_discrete = .rmst_dot_psi_discrete,
-    surv_curve = .surv_prob_surv_curve,
-
-    direct_discrete = function(predict_haz, eval_Z, M, du) {
+    direct = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
-      h_fn = function(k) predict_haz(k, Za)
-      .rmst_psi_discrete(h_fn, M, du)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, Za), grid$M)
+      rmst(dL, grid)
     },
 
-    dot_psi_Z_discrete = function(predict_haz, eval_Z, M, du) {
+    dot_psi_Z = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
-      h_fn = function(k) predict_haz(k, Za)
-      .rmst_dot_psi_discrete(h_fn, M, du)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, Za), grid$M)
+      rmst_dot(dL, grid)
     },
 
-    direct_cts = function(predict_haz, eval_Z, horizon, Q) {
+    dpsi_grid = function(predict_dLambda, eval_Z, mesh_u, train_grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
-      du = horizon / Q
-      h_fn = function(k) predict_haz(k, Za)
-      .rmst_psi(h_fn, Q, du)
-    },
-
-    dot_psi_Z_cts = function(predict_haz, eval_Z, horizon, Q) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      Za = cbind(arm, eval_X)
-      du = horizon / Q
-      h_fn = function(k) predict_haz(k, Za)
-      .rmst_dot_psi(h_fn, Q, du)
-    },
-
-    # dpsi evaluation grid for gamma functional.
-    dpsi_grid = function(predict_haz, eval_Z, mesh_u, mesh, M_train, du_bin) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      mesh_k = match(mesh_u, mesh)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, Za), train_grid$M)
+      dp = rmst_dot(dL, train_grid)
+      mesh_k = match(mesh_u, train_grid$points)
       n_eval = nrow(eval_Z)
       n_mu = length(mesh_u)
-      Za = cbind(arm, eval_X)
-      h_fn = function(k) predict_haz(k, Za)
-      dp = .rmst_dot_psi_discrete(h_fn, M_train, du_bin)
       r_subj = array(NA_real_, c(n_eval, n_mu))
       for (j in seq_along(mesh_u)) r_subj[, j] = dp(mesh_k[j])
       Z_ctf = do.call(rbind, lapply(seq_along(mesh_u), function(j) {
@@ -494,62 +295,37 @@ rmst_ate = function() {
     type = "survival",
     W_fn = function(A) 2 * A - 1,
 
-    psi = .rmst_psi,
-    psi_discrete = .rmst_psi_discrete,
-    dot_psi = .rmst_dot_psi,
-    dot_psi_discrete = .rmst_dot_psi_discrete,
-    surv_curve = .surv_prob_surv_curve,
-
-    direct_discrete = function(predict_haz, eval_Z, M, du) {
+    direct = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      .rmst_psi_discrete(h_fn_1, M, du) - .rmst_psi_discrete(h_fn_0, M, du)
+      dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), grid$M)
+      dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), grid$M)
+      rmst(dL1, grid) - rmst(dL0, grid)
     },
 
-    dot_psi_Z_discrete = function(predict_haz, eval_Z, M, du) {
+    dot_psi_Z = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      d1 = .rmst_dot_psi_discrete(h_fn_1, M, du)
-      d0 = .rmst_dot_psi_discrete(h_fn_0, M, du)
+      dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), grid$M)
+      dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), grid$M)
+      d1 = rmst_dot(dL1, grid)
+      d0 = rmst_dot(dL0, grid)
       function(k) d1(k) - d0(k)
     },
 
-    dot_psi_arm_discrete = function(predict_haz, eval_Z, M, du, arm) {
+    dot_psi_arm = function(predict_dLambda, eval_Z, grid, arm) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      h_fn = function(k) predict_haz(k, cbind(arm, eval_X))
-      .rmst_dot_psi_discrete(h_fn, M, du)
+      dL = materialize_dLambda(\(k) predict_dLambda(k, cbind(arm, eval_X)), grid$M)
+      rmst_dot(dL, grid)
     },
 
-    direct_cts = function(predict_haz, eval_Z, horizon, Q) {
+    dpsi_grid = function(predict_dLambda, eval_Z, mesh_u, train_grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
-      du = horizon / Q
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      .rmst_psi(h_fn_1, Q, du) - .rmst_psi(h_fn_0, Q, du)
-    },
-
-    dot_psi_Z_cts = function(predict_haz, eval_Z, horizon, Q) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      du = horizon / Q
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      d1 = .rmst_dot_psi(h_fn_1, Q, du)
-      d0 = .rmst_dot_psi(h_fn_0, Q, du)
-      function(u) d1(u) - d0(u)
-    },
-
-    # dpsi evaluation grid for gamma functional. ATE: both arms stacked.
-    dpsi_grid = function(predict_haz, eval_Z, mesh_u, mesh, M_train, du_bin) {
-      eval_X = eval_Z[, -1, drop = FALSE]
-      mesh_k = match(mesh_u, mesh)
+      dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), train_grid$M)
+      dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), train_grid$M)
+      dp1 = rmst_dot(dL1, train_grid)
+      dp0 = rmst_dot(dL0, train_grid)
+      mesh_k = match(mesh_u, train_grid$points)
       n_eval = nrow(eval_Z)
       n_mu = length(mesh_u)
-      h_fn_1 = function(k) predict_haz(k, cbind(1, eval_X))
-      h_fn_0 = function(k) predict_haz(k, cbind(0, eval_X))
-      dp1 = .rmst_dot_psi_discrete(h_fn_1, M_train, du_bin)
-      dp0 = .rmst_dot_psi_discrete(h_fn_0, M_train, du_bin)
       r1_subj = r0_subj = array(NA_real_, c(n_eval, n_mu))
       for (j in seq_along(mesh_u)) {
         r1_subj[, j] = dp1(mesh_k[j])

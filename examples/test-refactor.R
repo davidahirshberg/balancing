@@ -5,6 +5,7 @@
 setwd("/Users/skip/work/balancing")
 source("R/kernel.R")
 source("R/dispersions.R")
+source("R/grid.R")
 source("R/estimands.R")
 source("R/survival.R")
 source("R/surv_estimate.R")
@@ -114,5 +115,44 @@ stopifnot(all(tm_disc$mesh == 1:8))           # grid points
 cat("   continuous midpoints:", paste(tm_cts$mesh, collapse=", "), "\n")
 cat("   discrete grid points:", paste(tm_disc$mesh, collapse=", "), "\n")
 cat("   OK\n")
+
+# --- 8. Grid operations: product integral matches discrete formula ---
+cat("8. Grid operations\n")
+# Known hazard: h = (0.1, 0.2, 0.15) for 3 subjects x 3 time points
+dL = matrix(c(0.1, 0.1, 0.1,   # col 1
+               0.2, 0.2, 0.2,   # col 2
+               0.15, 0.15, 0.15), # col 3
+            nrow = 3, ncol = 3)
+# S(tau) = (1 - 0.1)(1 - 0.2)(1 - 0.15) = 0.9 * 0.8 * 0.85 = 0.612
+S_expected = 0.9 * 0.8 * 0.85
+stopifnot(max(abs(surv_prob(dL) - S_expected)) < 1e-10)
+cat("   surv_prob: OK\n")
+
+# surv_curve: S[,1] = 0.9, S[,2] = 0.72, S[,3] = 0.612
+S_curve = surv_curve(dL)
+stopifnot(abs(S_curve[1, 1] - 0.9) < 1e-10)
+stopifnot(abs(S_curve[1, 2] - 0.72) < 1e-10)
+stopifnot(abs(S_curve[1, 3] - 0.612) < 1e-10)
+cat("   surv_curve: OK\n")
+
+# surv_prob_dot: -S(tau) / (1 - dL_k)
+dp = surv_prob_dot(dL)
+stopifnot(abs(dp(1)[1] - (-0.612 / 0.9)) < 1e-10)
+stopifnot(abs(dp(2)[1] - (-0.612 / 0.8)) < 1e-10)
+stopifnot(abs(dp(3)[1] - (-0.612 / 0.85)) < 1e-10)
+cat("   surv_prob_dot: OK\n")
+
+# RMST discrete: sum S_k * du (rectangle rule)
+g = discrete_grid(c(1, 2, 3))
+rmst_val = rmst(dL, g)
+rmst_expected = (0.9 + 0.72 + 0.612) * 1  # du = 1
+stopifnot(max(abs(rmst_val - rmst_expected)) < 1e-10)
+cat("   rmst (discrete): OK\n")
+
+# materialize_dLambda
+h_fn = function(k) dL[, k]
+dL2 = materialize_dLambda(h_fn, 3)
+stopifnot(all(dL2 == dL))
+cat("   materialize_dLambda: OK\n")
 
 cat("\n=== All tests passed ===\n")
