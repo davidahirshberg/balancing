@@ -6,3 +6,9 @@
 *.so
 *.dll
 man/*.Rd
+*.rds
+*.out
+*.pdf
+cache/
+scratch/
+archive/

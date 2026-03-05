@@ -92,11 +92,11 @@ if (!is_cts) estimand_names = c(estimand_names, "tsm1")
 # ============================================================
 # Setup
 # ============================================================
-source("R/kernel.R")
-for (f in c("R/estimands.R", "R/survival.R", "R/surv_estimate.R", "R/tuning.R", "R/dgp.R"))
+source("R/all.R")
+for (f in c("R/tuning.R", "R/dgp.R"))
   source(f)
 
-# Helpers: gamma_measure, compute_direct, correction_terms, make_dchis_gamma_ts,
+# Helpers: gamma_measure, compute_direct, correction_terms, build_gamma_correction,
 # dr_fold/crossfit/bootstrap now come from R/surv_estimate.R.
 
 
@@ -110,9 +110,9 @@ get_dgp_fn = function(dgp_name) {
 }
 get_estimand = function(est_name) {
   switch(est_name,
-    surv_prob = surv_prob_estimand(),
-    rmst = rmst_estimand(),
-    tsm1 = surv_tsm(1),
+    surv_prob = survival_probability_ate(),
+    rmst = rmst_ate(),
+    tsm1 = survival_probability_tsm(1),
     stop("Unknown estimand: ", est_name))
 }
 make_kern = function(kern_name, mesh = NULL) {
@@ -262,7 +262,7 @@ one_rep = function(rep_id) {
     source(file.path(os_dir, "one-step-estimator.R"))
 
     for (en in setdiff(estimand_names, "rmst")) {
-      os_estimand = if (en == "tsm1") "tsm1" else "surv"
+      os_estimand = if (en == "tsm1") "tsm1" else "surv_prob"
       os_res = tryCatch(
         one_step_surv(disc_dat$T_obs, disc_dat$D, disc_dat$A, disc_dat$X,
                       n_steps = as.integer(cell$res),
@@ -421,7 +421,7 @@ one_rep = function(rep_id) {
 
         dchis_gamma_folds = lapply(1:n_folds, function(ff) {
           mp = mps[[ff]]
-          make_dchis_gamma_ts(predict_haz_folds[[ff]], estimand_obj, mp$eval_Z,
+          build_gamma_correction(predict_haz_folds[[ff]], estimand_obj, mp$eval_Z,
                               length(mp$mesh), mp$du_bin)
         })
 

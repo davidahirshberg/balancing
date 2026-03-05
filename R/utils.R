@@ -42,7 +42,7 @@ atleast_2d = function(Z) {
 }
 
 #' Set treatment column to a given value.
-with.treatment = function(z, a) { z2 = z; z2[, 1] = a; z2 }
+with_treatment = function(z, a) { z2 = z; z2[, 1] = a; z2 }
 
 #' Legacy outerproduct: loop over rows of B. Slow but general.
 outerproduct = function(A, B, K) {

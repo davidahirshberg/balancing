@@ -31,7 +31,7 @@
 #' Treatment-specific mean: E[mu_arm(X)].
 #' DR: direct + mean(gamma_arm * (Y - mu_arm)).
 tsm_estimand = function(arm = 1) {
-  list(
+  structure(list(
     name = paste0("tsm", arm),
     type = "single_outcome",
 
@@ -61,12 +61,12 @@ tsm_estimand = function(arm = 1) {
       se = sd(eif) / sqrt(n)
       list(est = est, se = se, eif = eif)
     }
-  )
+  ), class = c("single_outcome_estimand", "estimand"))
 }
 
 #' Variance of CATE: Var(mu1(X) - mu0(X)).
 vcate_estimand = function() {
-  list(
+  structure(list(
     name = "vcate",
     type = "single_outcome",
 
@@ -96,12 +96,12 @@ vcate_estimand = function() {
       se = sd(eif) / sqrt(n)
       list(est = vcate, se = se, eif = eif, ate_dr = ate_dr)
     }
-  )
+  ), class = c("single_outcome_estimand", "estimand"))
 }
 
 #' Risk ratio: E[mu1(X)] / E[mu0(X)].
 rr_estimand = function() {
-  list(
+  structure(list(
     name = "rr",
     type = "single_outcome",
 
@@ -130,7 +130,7 @@ rr_estimand = function() {
       se = sd(eif) / sqrt(n)
       list(est = rr, se = se, eif = eif, tsm1 = tsm1, tsm0 = tsm0)
     }
-  )
+  ), class = c("single_outcome_estimand", "estimand"))
 }
 
 # ============================================================
@@ -141,8 +141,8 @@ rr_estimand = function() {
 #'
 #' direct: S(tau | a, X) via product integral.
 #' dot_psi_Z(k): -S(tau | a, X) / (1 - dLambda_k(a, X)).
-surv_tsm = function(arm) {
-  list(
+survival_probability_tsm = function(arm) {
+  structure(list(
     name = paste0("survival.probability.tsm", arm),
     type = "survival",
     arm = arm,
@@ -179,15 +179,15 @@ surv_tsm = function(arm) {
     },
 
     grf_target = "survival.probability"
-  )
+  ), class = c("survival_estimand", "estimand"))
 }
 
 #' Survival probability ATE: E[S(tau | 1, X)] - E[S(tau | 0, X)].
 #'
 #' direct: S(tau|1,X) - S(tau|0,X) via product integral.
 #' dot_psi_Z(k): -S(tau|1,x)/(1-dL_k(1,x)) + S(tau|0,x)/(1-dL_k(0,x)).
-surv_ate = function() {
-  list(
+survival_probability_ate = function() {
+  structure(list(
     name = "survival.probability",
     type = "survival",
     W_fn = function(A) 2 * A - 1,
@@ -236,19 +236,14 @@ surv_ate = function() {
     },
 
     grf_target = "survival.probability"
-  )
+  ), class = c("survival_estimand", "estimand"))
 }
-
-#' Backward-compatible wrappers.
-surv_prob_ate = function() surv_ate()
-surv_prob_tsm = function(arm) surv_tsm(arm)
-surv_prob_estimand = function() surv_ate()
 
 # ---- RMST estimands ----
 
 #' RMST TSM: E[int_0^tau S(u | a, X) du].
 rmst_tsm = function(arm) {
-  list(
+  structure(list(
     name = paste0("rmst.tsm", arm),
     type = "survival",
     arm = arm,
@@ -285,12 +280,12 @@ rmst_tsm = function(arm) {
     },
 
     grf_target = "RMST"
-  )
+  ), class = c("survival_estimand", "estimand"))
 }
 
 #' RMST ATE: E[int_0^tau S(u|1,X) du] - E[int_0^tau S(u|0,X) du].
 rmst_ate = function() {
-  list(
+  structure(list(
     name = "rmst",
     type = "survival",
     W_fn = function(A) 2 * A - 1,
@@ -338,8 +333,5 @@ rmst_ate = function() {
     },
 
     grf_target = "RMST"
-  )
+  ), class = c("survival_estimand", "estimand"))
 }
-
-#' Backward-compatible wrapper. Returns rmst_ate().
-rmst_estimand = function() rmst_ate()

@@ -538,22 +538,6 @@ efficient_se = function(dgp, p,
   invisible(out)
 }
 
-#' Clear all cached efficient SE results, or just those matching a pattern.
-efficient_se_clear_cache = function(pattern = NULL, cache_dir = NULL) {
-  if (is.null(cache_dir))
-    cache_dir = file.path(dirname(sys.frame(sys.nframe())$ofile %||% "."), "cache")
-  if (!dir.exists(cache_dir)) return(invisible(NULL))
-  files = list.files(cache_dir, pattern = "\\.rds$", full.names = TRUE)
-  if (!is.null(pattern))
-    files = files[grepl(pattern, basename(files))]
-  if (length(files) > 0) {
-    file.remove(files)
-    cat(sprintf("Removed %d cached file(s).\n", length(files)))
-  }
-  invisible(NULL)
-}
-
-
 # ============================================================
 # Named survival DGPs
 # ============================================================
@@ -564,19 +548,20 @@ efficient_se_clear_cache = function(pattern = NULL, cache_dir = NULL) {
 #'
 #' Event hazard rate: expit(alpha + beta_w * W + beta_x * 1'X + gamma_t * u)
 #' Censoring rate:    expit(alpha_c + beta_w_c * W + beta_wx2_c * W * 1'X^2 + gamma_t_c * u)
-#' Propensity:        expit(0.3 * 1'X)
+#' Propensity:        expit(prop_coef * 1'X)
 #' Covariates:        X ~ N(0, Sigma), Sigma = 0.8*I + 0.2*11'
 paper_cts_dgp = function(horizon = 1, alpha = -0.1, beta_w = 0.4,
                           beta_x = 0.3, gamma_t = 0.5,
                           alpha_c = -3.15, beta_w_c = -0.15,
-                          beta_wx2_c = 0.1, gamma_t_c = 0.2) {
+                          beta_wx2_c = 0.1, gamma_t_c = 0.2,
+                          prop_coef = 0.3) {
   make_dgp(
-    name = sprintf("paper_cts_h%.2g", horizon),
+    name = sprintf("paper_cts_h%.2g_p%.2g", horizon, prop_coef),
     hazard = function(u, Z)
       plogis(alpha + beta_w * Z[,1] + beta_x * rowSums(Z[,2:ncol(Z),drop=FALSE]) + gamma_t * u),
     censor_hazard = function(u, Z)
       plogis(alpha_c + beta_w_c * Z[,1] + beta_wx2_c * rowSums(Z[,1] * Z[,2:ncol(Z),drop=FALSE]^2) + gamma_t_c * u),
-    propensity = function(X) plogis(X %*% rep(0.3, ncol(X))),
+    propensity = function(X) plogis(X %*% rep(prop_coef, ncol(X))),
     covariance = function(p) 0.8 * diag(p) + 0.2 * matrix(1, p, p),
     horizon = horizon, time = "continuous")
 }
@@ -652,26 +637,6 @@ grf_type1_dgp = function(horizon = 0.8) {
       exp(eta_C) / (2 * sqrt(pmax(u, 1e-10)))
     },
     propensity = function(X) (1 + dbeta(X[, 1], 2, 4)) / 4,
-    horizon = horizon, time = "continuous",
-    draw_X = function(n, p) matrix(runif(n * p), n, p))
-}
-
-#' GRF simple1: shifted exponential failure, Uniform(0,2) censoring.
-#'
-#' Failure: T = E * X_1 + W, E ~ Exp(1).
-#'   Hazard: lambda(t|W=w) = 1/X_1 for t > w, 0 for t <= w.
-#' Propensity: 0.5 (randomized).
-grf_simple1_dgp = function(horizon = 0.6) {
-  make_dgp(
-    name = sprintf("grf_simple1_h%.2g", horizon),
-    hazard = function(u, Z) {
-      W = Z[, 1]; X1 = Z[, 2]
-      ifelse(u > W, 1 / X1, 0)
-    },
-    censor_hazard = function(u, Z) {
-      rep(1 / (2 - u), nrow(Z))  # Uniform(0,2)
-    },
-    propensity = function(X) rep(0.5, nrow(X)),
     horizon = horizon, time = "continuous",
     draw_X = function(n, p) matrix(runif(n * p), n, p))
 }

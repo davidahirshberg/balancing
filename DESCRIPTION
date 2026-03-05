@@ -11,6 +11,19 @@ License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
+Collate:
+    'utils.R'
+    'kernel.R'
+    'dispersion.R'
+    'solver.R'
+    'grid.R'
+    'estimands.R'
+    'survival.R'
+    'surv_estimate.R'
+    'estimate.R'
+    'tuning.R'
+    'dgp.R'
+    'all.R'
 Suggests:
     testthat (>= 3.0.0),
     grf

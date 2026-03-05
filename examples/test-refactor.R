@@ -3,12 +3,7 @@
 ## and produces a finite DR estimate.
 
 setwd("/Users/skip/work/balancing")
-source("R/kernel.R")
-source("R/dispersions.R")
-source("R/grid.R")
-source("R/estimands.R")
-source("R/survival.R")
-source("R/surv_estimate.R")
+source("R/all.R")
 source("R/dgp.R")
 
 cat("=== S3 dispersion smoke test ===\n\n")
@@ -57,7 +52,7 @@ expected = r + sign(r) * pmax(psi, 0)  # c(1 + 0.2, -2 - 0.2) = c(1.2, -2.2)
 stopifnot(max(abs(gamma - expected)) < 1e-10)
 cat("   dchis: OK\n")
 
-# --- 4. Verify vectorized dispersion in make_dchis_gamma_ts context ---
+# --- 4. Verify vectorized dispersion in build_gamma_correction context ---
 cat("4. Vectorized dispersion (dispersion with vector offset)\n")
 r_vec = c(0.5, -0.3, 0.1, -0.8)
 d = dispersion(entropy_base, offset = r_vec, sigma = sign(r_vec))
@@ -75,7 +70,7 @@ dat = dgp$generate(50, p = 2)
 kern = direct_product(matern_kernel(sigma = 2, nu = 3/2), iw = 2, levels = c(0, 1))
 
 obs = list(T_obs = dat$T_obs, D = dat$D, Z = cbind(dat$A, dat$X))
-estimand = surv_prob_estimand()
+estimand = survival_probability_ate()
 
 dr = survival_effect(obs, kern, estimand,
                      lambda_disp = entropy_dispersion(),

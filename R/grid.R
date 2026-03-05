@@ -129,28 +129,6 @@ integrate_du = function(f, grid) {
 }
 
 # ============================================================
-# Integration against dLambda (compensator, dpsi targets)
-# ============================================================
-
-#' Truncated integral: sum_{k: u_k <= T_i} f_k * dLambda_k.
-#'
-#' @param f Matrix (n x M).
-#' @param dLambda Matrix (n x M).
-#' @param grid Grid object.
-#' @param upper Vector (n) of upper limits.
-#' @return Vector (n).
-integrate_dLambda = function(f, dLambda, grid, upper) {
-  n = nrow(f); M = ncol(f)
-  result = numeric(n)
-  for (k in 1:M) {
-    ar = which(upper >= grid$points[k])
-    if (length(ar) == 0) break
-    result[ar] = result[ar] + f[ar, k] * dLambda[ar, k]
-  }
-  result
-}
-
-# ============================================================
 # RMST: int_0^tau S(u) du
 # ============================================================
 

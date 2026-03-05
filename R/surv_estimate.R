@@ -34,7 +34,7 @@ compute_direct = function(phi, lambda_disp, estimand, mp, grid) {
   dchis = \(p) .dchis(lambda_disp, p)
 
   # predict_haz on training mesh: model output = dLambda on training grid.
-  # Used by gamma_measure / make_dchis_gamma_ts (always on training mesh).
+  # Used by gamma_measure / build_gamma_correction (always on training mesh).
   predict_haz = function(k, Z_ev) dchis(phi(cbind(mp$mesh[k], Z_ev)))
 
   # predict_dLambda on evaluation grid: scale by du_eval / du_bin.
@@ -78,7 +78,7 @@ correction_terms = function(mp, lambda_fit_, gamma_fit_, lambda_disp, dchis_gamm
 #' and evaluates .dchis at phi.
 #'
 #' @param gamma_base  Base dispersion record. Default entropy_base (gives TSE).
-make_dchis_gamma_ts = function(predict_haz, estimand_obj, eval_Z,
+build_gamma_correction = function(predict_haz, estimand_obj, eval_Z,
                                 train_grid, gamma_base = entropy_base) {
   M_train = train_grid$M
   du_bin = train_grid$du
@@ -150,6 +150,8 @@ mesh_project = function(observations, horizon, M_train, n_folds, kern, discrete 
                               K_cross = K_lambda)
     tgt_lambda = split_target(c_lambda, nrow(stacked_lambda$Z_pool))
 
+    K_gamma = kernel_matrix(stacked_gamma$Z_pool, stacked_gamma$Z_pool, kern)
+
     eval_Z = Z[eval_idx, , drop = FALSE]
 
     # Training grid: always discrete (model output = dLambda on mesh points)
@@ -159,7 +161,7 @@ mesh_project = function(observations, horizon, M_train, n_folds, kern, discrete 
          stacked_lambda = stacked_lambda, stacked_gamma = stacked_gamma,
          mesh = lambda_train$mesh, du_bin = stacked_lambda$du_bin,
          mesh_u = unique(stacked_gamma$u_pool),
-         K_lambda = K_lambda, tgt_lambda = tgt_lambda,
+         K_lambda = K_lambda, K_gamma = K_gamma, tgt_lambda = tgt_lambda,
          train_grid = train_grid,
          eval_Z = eval_Z,
          T_obs_eval = T_obs[eval_idx], D_eval = D[eval_idx],
@@ -177,12 +179,13 @@ mesh_project = function(observations, horizon, M_train, n_folds, kern, discrete 
 #' @param mp A mesh_projection (one element of mesh_project output).
 #' @param warm Optional previous fit for warm-starting ($alpha, $beta).
 #' @return A kernel_bregman fit object.
-fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL, log = null_logger) {
+fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL,
+                      K_chol = NULL, log = null_logger) {
   kernel_bregman(mp$stacked_lambda$Z_pool, kern,
                  eta = eta, dispersion = lambda_disp,
                  target = mp$tgt_lambda$target,
                  target_null = mp$tgt_lambda$target_null,
-                 K = mp$K_lambda,
+                 K = mp$K_lambda, K_chol = K_chol,
                  alpha0 = warm$alpha, beta0 = warm$beta,
                  log = log)
 }
@@ -203,31 +206,41 @@ fit_gamma = function(mp, lambda_fit, kern, eta, estimand,
                      gamma_base = entropy_base,
                      warm = NULL,
                      gamma_target = NULL, gamma_target_null = NULL,
-                     w = NULL,
+                     w = NULL, w_eval = NULL,
+                     K_cross = NULL, dchis_gamma = NULL,
+                     K_chol_gamma = NULL,
+                     maxiter = 25,
                      log = null_logger) {
+  lambda_fit = .bind(lambda_fit, mp$eval_Z)
   phi   = \(Z) .phi(lambda_fit, Z)
   dchis = \(p) .dchis(lambda_fit$dispersion, p)
   predict_haz = function(k, Z_ev) dchis(phi(cbind(mp$mesh[k], Z_ev)))
 
-  dchis_gamma = make_dchis_gamma_ts(predict_haz, estimand, mp$eval_Z,
-                                     mp$train_grid,
-                                     gamma_base = gamma_base)
+  if (is.null(dchis_gamma))
+    dchis_gamma = build_gamma_correction(predict_haz, estimand, mp$eval_Z,
+                                       mp$train_grid,
+                                       gamma_base = gamma_base)
 
   if (is.null(gamma_target)) {
-    emb = gamma_measure(estimand, predict_haz, mp)
-    tgt = split_target(project_target(mp$stacked_gamma$Z_pool, kern, emb),
+    emb = gamma_measure(estimand, predict_haz, mp, w_eval = w_eval)
+    tgt = split_target(project_target(mp$stacked_gamma$Z_pool, kern, emb,
+                                      K_cross = K_cross),
                        nrow(mp$stacked_gamma$Z_pool))
     gamma_target = tgt$target
     gamma_target_null = tgt$target_null
   }
   gamma_disp = gamma_disp_fn(gamma_target)
 
+  K_gam = if (!is.null(warm$K)) warm$K
+          else if (!is.null(mp$K_gamma)) mp$K_gamma
+          else NULL
   gamma_fit = kernel_bregman(mp$stacked_gamma$Z_pool, kern,
                              eta = eta, dispersion = gamma_disp,
                              target = gamma_target, target_null = gamma_target_null,
                              w = w,
-                             K      = warm$K,
+                             K = K_gam, K_chol = K_chol_gamma,
                              alpha0 = warm$alpha, beta0 = warm$beta,
+                             maxiter = maxiter,
                              log = indent(log, "gamma"))
 
   list(gamma_fit = gamma_fit, dchis_gamma = dchis_gamma,
@@ -246,7 +259,7 @@ estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
   lambda_disp = lambda_fit$dispersion
   lambda_fit_ = .bind(lambda_fit, mp$eval_Z)
   gamma_fit_ = .bind(gamma_result$gamma_fit, mp$eval_Z)
-  phi = \(Z) .phi(lambda_fit, Z)
+  phi = \(Z) .phi(lambda_fit_, Z)
 
   dr = compute_direct(phi, lambda_disp, estimand, mp, grid)
 
@@ -311,7 +324,7 @@ aggregate_dr = function(mps, lambda_fits, gamma_results, fold_estimates,
 #'
 #' @param observations List with $T_obs, $D, $Z.
 #' @param kern Kernel object.
-#' @param estimand Estimand object (e.g. surv_ate()).
+#' @param estimand Estimand object (e.g. survival_probability_ate()).
 #' @param lambda_disp Dispersion for lambda (hazard model).
 #' @param eta_lam Regularization for lambda.
 #' @param eta_gam Regularization for gamma (weight model).
@@ -368,12 +381,8 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
   grid = obj$grid; eta_gam = obj$eta_gam
   gamma_disp_fn = obj$gamma_disp_fn
 
-  dchis_lam = \(p) .dchis(lambda_disp, p)
   boot_ates = rep(NA_real_, n_reps)
   boot_ses = rep(NA_real_, n_reps)
-  gamma_iters = integer(0)
-  gamma_status = character(0)
-
   # Pre-compute cross-kernel matrices for gamma target projection
   K_cross_gamma = lapply(seq_along(obj$mps), function(ff) {
     mp = obj$mps[[ff]]
@@ -381,6 +390,11 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
     emb_template = estimand$dpsi_grid(dummy_haz, mp$eval_Z, mp$mesh_u, mp$train_grid)
     kernel_matrix(mp$stacked_gamma$Z_pool, emb_template$Z, kern)
   })
+
+  # Per-step timing accumulators
+  t_acc = list(proj_lam = 0, onestep_lam = 0,
+               fit_gamma = 0, estimate = 0)
+  tick = function() proc.time()[3]
 
   for (b in 1:n_reps) {
     t_boot = proc.time()
@@ -399,46 +413,34 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
       w_eval = w_subj[mp$eval_idx]
 
       # One-step Newton for lambda
+      t0 = tick()
       c_lambda_b = project_target(mp$stacked_lambda$Z_pool, kern,
                                   list(Z = mp$stacked_lambda$Z_pool,
                                        r = w_pool_lambda * mp$stacked_lambda$Y_pool),
                                   K_cross = lam_fit$K)
       tgt_b = split_target(c_lambda_b, nrow(mp$stacked_lambda$Z_pool))
+      t1 = tick(); t_acc$proj_lam = t_acc$proj_lam + (t1 - t0)
+
       lambda_boot = onestep_bregman(lam_fit, tgt_b$target, tgt_b$target_null,
                                     w_pool_lambda)
+      t2 = tick(); t_acc$onestep_lam = t_acc$onestep_lam + (t2 - t1)
 
-      # Gamma target from bootstrap lambda
-      phi_boot = \(Z) .phi(lambda_boot, Z)
-      predict_haz_b = function(k, Z_ev) dchis_lam(phi_boot(cbind(mp$mesh[k], Z_ev)))
-      emb_b = gamma_measure(estimand, predict_haz_b, mp, w_eval = w_eval)
-      c_gamma_b = split_target(
-        project_target(mp$stacked_gamma$Z_pool, kern, emb_b,
-                       K_cross = K_cross_gamma[[ff]]),
-        nrow(mp$stacked_gamma$Z_pool))
+      # One-step gamma via fit_gamma (reuses dchis_gamma, pre-computed K_cross)
+      gam_res_b = fit_gamma(mp, lambda_boot, kern, eta_gam, estimand,
+                            gamma_disp_fn = gamma_disp_fn,
+                            warm = gam_res$gamma_fit,
+                            w = w_pool_gamma, w_eval = w_eval,
+                            K_cross = K_cross_gamma[[ff]],
+                            dchis_gamma = gam_res$dchis_gamma,
+                            K_chol_gamma = gam_res$gamma_fit$K_chol,
+                            maxiter = 1, log = flog)
+      t3 = tick(); t_acc$fit_gamma = t_acc$fit_gamma + (t3 - t2)
 
-      # Re-solve gamma with bootstrap weights, warm-started from original
-      gam_b = fit_gamma(mp, lambda_boot, kern, eta_gam, estimand,
-                        gamma_disp_fn = gamma_disp_fn,
-                        gamma_base = obj$gamma_base,
-                        warm = gam_res$gamma_fit,
-                        gamma_target = c_gamma_b$target,
-                        gamma_target_null = c_gamma_b$target_null,
-                        w = w_pool_gamma,
-                        log = flog)
-      gamma_iters  = c(gamma_iters,  gam_b$gamma_fit$iter)
-      gamma_status = c(gamma_status, gam_b$gamma_fit$status)
+      # DR estimate via shared estimate() path
+      est_b = estimate(mp, lambda_boot, gam_res_b, estimand, grid)
+      t4 = tick(); t_acc$estimate = t_acc$estimate + (t4 - t3)
 
-      # Estimate with bootstrap models but original dchis_gamma
-      lambda_boot_ = .bind(lambda_boot, mp$eval_Z)
-      gamma_boot_ = .bind(gam_b$gamma_fit, mp$eval_Z)
-
-      dr_b = compute_direct(phi_boot, lambda_disp, estimand, mp, grid)
-
-      ct_b = correction_terms(mp, lambda_boot_, gamma_boot_,
-                               lambda_disp, gam_res$dchis_gamma,
-                               grid)
-
-      dr_terms_b = dr_b$direct + ct_b$correction
+      dr_terms_b = est_b$terms
       all_terms = c(all_terms, w_eval * dr_terms_b)
     }
 
@@ -450,15 +452,19 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
     blog$info("est=%.5f  %.1fs", boot_ates[b], elapsed_b)
   }
 
-  log$info("gamma iters: min=%d, median=%.0f, max=%d",
-           min(gamma_iters), median(gamma_iters), max(gamma_iters))
-  log$data("gamma_iters", gamma_iters)
-  log$data("gamma_status", gamma_status)
+  # Report per-step timing
+  total_acc = Reduce(`+`, t_acc)
+  if (n_reps > 0 && total_acc > 0) {
+    cat(sprintf("\n  Bootstrap step timing (%d reps × %d folds):\n", n_reps, length(obj$mps)))
+    for (nm in names(t_acc))
+      cat(sprintf("    %-16s %6.3fs  %5.1f%%  (%.4fs/rep)\n",
+                  nm, t_acc[[nm]], 100 * t_acc[[nm]] / total_acc, t_acc[[nm]] / n_reps))
+    cat(sprintf("    %-16s %6.3fs\n", "TOTAL", total_acc))
+  }
 
   structure(
     list(boot_ates = boot_ates, boot_ses = boot_ses,
-         est = obj$est, se_amle = obj$se_amle,
-         gamma_iters = gamma_iters, gamma_status = gamma_status),
+         est = obj$est, se_amle = obj$se_amle),
     class = "boot_result")
 }
 
