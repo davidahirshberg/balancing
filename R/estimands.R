@@ -1,20 +1,20 @@
 #' # Estimand Constructors
 #'
-#' An estimand is the $(\psi, \dot\psi_Z)$ pair that defines what
+#' An estimand is the \eqn{(\\psi, \\dot\\psi_Z)} pair that defines what
 #' we estimate and what the balancing weights must balance.
 #'
-#' **Paper**: the estimand functional $\psi(\mu)$ maps a nuisance
-#' function $\mu$ (outcome model or hazard) to a scalar. Its
-#' Gateaux derivative $\dot\psi_Z(\mu)[h]$ defines the moment
+#' **Paper**: the estimand functional \eqn{\\psi(\\mu)} maps a nuisance
+#' function \eqn{\\mu} (outcome model or hazard) to a scalar. Its
+#' Gateaux derivative \eqn{\\dot\\psi_Z(\\mu)[h]} defines the moment
 #' condition:
-#' $$\hat P\, \gamma(Z)\{Y - \mu(Z)\} \approx \dot\psi_Z(\mu)[h]
-#'   \quad \text{for all } h \in B_\rho$$
+#' \deqn{\\hat P\\, \\gamma(Z)\\\{Y - \\mu(Z)\\\} \\approx \\dot\\psi_Z(\\mu)[h]
+#'   \\quad \\text\{for all \} h \\in B_\\rho}
 #'
-#' The Riesz representer $\gamma_{\dot\psi}$ satisfies
-#' $\dot\psi_Z(h) = P\,\gamma_{\dot\psi}(Z)\,h(Z)$ and gives
+#' The Riesz representer \eqn{\\gamma_\{\\dot\\psi\}} satisfies
+#' \eqn{\\dot\\psi_Z(h) = P\\,\\gamma_\{\\dot\\psi\}(Z)\\,h(Z)} and gives
 #' the DR correction:
-#' $$\hat\psi = \hat P\,\psi_Z(\hat\mu) +
-#'   \hat P\,\hat\gamma(Z)\{Y - \hat\mu(Z)\}$$
+#' \deqn{\\hat\\psi = \\hat P\\,\\psi_Z(\\hat\\mu) +
+#'   \\hat P\\,\\hat\\gamma(Z)\\\{Y - \\hat\\mu(Z)\\\}}
 #'
 #' ## Interface
 #'
@@ -30,12 +30,12 @@
 #' - `dot_psi_Z(predict_dLambda, eval_Z, grid)` — function(k) giving
 #'   the Gateaux derivative as an n-vector
 #' - `dpsi_grid(predict_dLambda, eval_Z, mesh_u, train_grid)` —
-#'   dpsi evaluation grid $(Z, r)$ for gamma embedding
+#'   dpsi evaluation grid \eqn{(Z, r)} for gamma embedding
 #' - `W_fn(A)` — per-subject sign vector for sign-flip dispersion
 #'
-#' `predict_dLambda(k, Z)` takes grid index $k$ and covariate
-#' matrix $Z = (W, X)$, returns n-vector of hazard increments
-#' $d\Lambda_k$. The estimand evaluates at counterfactual arms
+#' `predict_dLambda(k, Z)` takes grid index \eqn{k} and covariate
+#' matrix \eqn{Z = (W, X)}, returns n-vector of hazard increments
+#' \eqn{d\\Lambda_k}. The estimand evaluates at counterfactual arms
 #' as needed.
 #'
 #' Both types carry a `$type` field for dispatch.
@@ -46,13 +46,13 @@
 
 #' ## Treatment-Specific Mean (TSM)
 #'
-#' **Paper**: $\psi^w(\mu) = E\,\mu(w, X)$ with Riesz representer
-#' $\gamma_{\dot\psi^w}(W, X) = \mathbf{1}(W = w) / \pi_w(X)$.
+#' **Paper**: \eqn{\\psi^w(\\mu) = E\\,\\mu(w, X)} with Riesz representer
+#' \eqn{\\gamma_\{\\dot\\psi^w\}(W, X) = \\mathbf\{1\}(W = w) / \\pi_w(X)}.
 #'
-#' **Code**: `theta` = $\hat P\,\hat\mu_w(X)$. DR correction adds
-#' $\hat P\,\hat\gamma_w(Y - \hat\mu_w)$. EIF:
-#' $\hat V_i = \hat\mu_w(X_i) - \hat\psi + \hat\gamma_w(Z_i)
-#' \{Y_i - \hat\mu_w(Z_i)\}$.
+#' **Code**: `theta` = \eqn{\\hat P\\,\\hat\\mu_w(X)}. DR correction adds
+#' \eqn{\\hat P\\,\\hat\\gamma_w(Y - \\hat\\mu_w)}. EIF:
+#' \eqn{\\hat V_i = \\hat\\mu_w(X_i) - \\hat\\psi + \\hat\\gamma_w(Z_i)
+#' \\\{Y_i - \\hat\\mu_w(Z_i)\\\}}.
 treatment_specific_mean = function(arm = 1) {
   structure(list(
     name = paste0("tsm", arm),
@@ -89,20 +89,20 @@ treatment_specific_mean = function(arm = 1) {
 
 #' ## Variance of CATE (VCATE)
 #'
-#' **Paper**: $\psi(\mu) = \mathrm{Var}(\mu_1(X) - \mu_0(X))$
-#' $= E[\tau(X)^2] - (E[\tau(X)])^2$ where $\tau(X) = \mu_1(X) -
-#' \mu_0(X)$. This is a second-order functional (quadratic in
-#' $\mu$).
+#' **Paper**: \eqn{\\psi(\\mu) = \\mathrm\{Var\}(\\mu_1(X) - \\mu_0(X))}
+#' \eqn{= E[\\tau(X)^2] - (E[\\tau(X)])^2} where \eqn{\\tau(X) = \\mu_1(X) -
+#' \\mu_0(X)}. This is a second-order functional (quadratic in
+#' \eqn{\\mu}).
 #'
 #' **Code**: DR correction uses two linear corrections:
-#' $\hat E[\tau^2]_{\mathrm{DR}} = \hat P\,\hat\tau^2 +
-#' 2\,\hat P\,\hat\tau\,(\hat\gamma_1 r_1 - \hat\gamma_0 r_0)$
-#' where $r_w = Y - \hat\mu_w$. The ATE correction is
-#' $\hat P\,\hat\tau + \hat P\,(\hat\gamma_1 r_1 - \hat\gamma_0 r_0)$.
+#' \eqn{\\hat E[\\tau^2]_\{\\mathrm\{DR\}\} = \\hat P\\,\\hat\\tau^2 +
+#' 2\\,\\hat P\\,\\hat\\tau\\,(\\hat\\gamma_1 r_1 - \\hat\\gamma_0 r_0)}
+#' where \eqn{r_w = Y - \\hat\\mu_w}. The ATE correction is
+#' \eqn{\\hat P\\,\\hat\\tau + \\hat P\\,(\\hat\\gamma_1 r_1 - \\hat\\gamma_0 r_0)}.
 #' EIF:
-#' $\hat V_i = (\hat\tau_i - \hat\psi_{\mathrm{ATE}})^2 +
-#' 2(\hat\tau_i - \hat\psi_{\mathrm{ATE}})(\hat\gamma_{1i} r_{1i}
-#' - \hat\gamma_{0i} r_{0i}) - \hat\psi$.
+#' \eqn{\\hat V_i = (\\hat\\tau_i - \\hat\\psi_\{\\mathrm\{ATE\}\})^2 +
+#' 2(\\hat\\tau_i - \\hat\\psi_\{\\mathrm\{ATE\}\})(\\hat\\gamma_\{1i\} r_\{1i\}
+#' - \\hat\\gamma_\{0i\} r_\{0i\}) - \\hat\\psi}.
 vcate = function() {
   structure(list(
     name = "vcate",
@@ -139,11 +139,11 @@ vcate = function() {
 
 #' ## Risk Ratio
 #'
-#' **Paper**: $\psi(\mu) = E[\mu_1(X)] / E[\mu_0(X)]$.
+#' **Paper**: \eqn{\\psi(\\mu) = E[\\mu_1(X)] / E[\\mu_0(X)]}.
 #' The EIF uses the delta method on the ratio of two TSMs:
-#' $\hat V_i^{\mathrm{RR}} = \hat V_i^{(1)} / \hat\psi_0
-#' - (\hat\psi_1 / \hat\psi_0^2)\,\hat V_i^{(0)}$
-#' where $\hat V_i^{(w)}$ is the TSM EIF for arm $w$.
+#' \eqn{\\hat V_i^\{\\mathrm\{RR\}\} = \\hat V_i^\{(1)\} / \\hat\\psi_0
+#' - (\\hat\\psi_1 / \\hat\\psi_0^2)\\,\\hat V_i^\{(0)\}}
+#' where \eqn{\\hat V_i^\{(w)\}} is the TSM EIF for arm \eqn{w}.
 #'
 #' **Code**: computes both arm-specific TSM DR estimates, takes
 #' the ratio, and constructs the delta-method EIF.
@@ -186,24 +186,24 @@ risk_ratio = function() {
 
 #' ## Survival Probability TSM
 #'
-#' **Paper**: $\psi^w(\lambda) = E[S_{\bar t}(w, X)]$ where
+#' **Paper**: \eqn{\\psi^w(\\lambda) = E[S_\{\\bar t\}(w, X)]} where
 #'
-#' - Discrete: $S_{\bar t}(w, X) = \prod_{u \in \mathcal{U}}
-#'   \{1 - \lambda_u(w, X)\}$
-#' - Continuous: $S_{\bar t}(w, X) = \exp\bigl(-\int_0^{\bar t}
-#'   \lambda_u(w, X)\,du\bigr)$
+#' - Discrete: \eqn{S_\{\\bar t\}(w, X) = \\prod_\{u \\in \\mathcal\{U\}\}
+#'   \\\{1 - \\lambda_u(w, X)\\\}}
+#' - Continuous: \eqn{S_\{\\bar t\}(w, X) = \\exp\\bigl(-\\int_0^\{\\bar t\}
+#'   \\lambda_u(w, X)\\,du\\bigr)}
 #'
-#' The Gateaux derivative evaluates at counterfactual arm $w$:
+#' The Gateaux derivative evaluates at counterfactual arm \eqn{w}:
 #'
-#' - Discrete: $\dot\psi^w_Z(\lambda)[h]_k =
-#'   -S_{\bar t}(w, X) / \{1 - \lambda_k(w, X)\}$
-#' - Continuous: $\dot\psi^w_Z(\lambda)[h]_k = -S_{\bar t}(w, X)$
+#' - Discrete: \eqn{\\dot\\psi^w_Z(\\lambda)[h]_k =
+#'   -S_\{\\bar t\}(w, X) / \\\{1 - \\lambda_k(w, X)\\\}}
+#' - Continuous: \eqn{\\dot\\psi^w_Z(\\lambda)[h]_k = -S_\{\\bar t\}(w, X)}
 #'
-#' **Code**: `direct` materializes $d\Lambda$ at $(w, X)$ and
+#' **Code**: `direct` materializes \eqn{d\\Lambda} at \eqn{(w, X)} and
 #' calls `survival_probability`. `dot_psi_Z` calls `survival_probability_dot` which
-#' returns a closure over grid index $k$. `dpsi_grid` builds the
-#' counterfactual evaluation grid $Z_{\mathrm{ctf}} = (u_m, w, X_i)$
-#' for the gamma embedding vector $c_\gamma$.
+#' returns a closure over grid index \eqn{k}. `dpsi_grid` builds the
+#' counterfactual evaluation grid \eqn{Z_\{\\mathrm\{ctf\}\} = (u_m, w, X_i)}
+#' for the gamma embedding vector \eqn{c_\\gamma}.
 survival_probability_tsm = function(arm) {
   structure(list(
     name = paste0("survival.probability.tsm", arm),
@@ -247,20 +247,20 @@ survival_probability_tsm = function(arm) {
 
 #' ## Survival Probability ATE
 #'
-#' **Paper**: $\psi(\lambda) = E[S_{\bar t}(1, X)] -
-#' E[S_{\bar t}(0, X)]$ with Gateaux derivative
-#' $\dot\psi_Z(\lambda)[h]_k = \dot\psi^1_{Z,k} - \dot\psi^0_{Z,k}$.
+#' **Paper**: \eqn{\\psi(\\lambda) = E[S_\{\\bar t\}(1, X)] -
+#' E[S_\{\\bar t\}(0, X)]} with Gateaux derivative
+#' \eqn{\\dot\\psi_Z(\\lambda)[h]_k = \\dot\\psi^1_\{Z,k\} - \\dot\\psi^0_\{Z,k\}}.
 #'
 #' The Riesz representer (continuous time):
-#' $$\gamma_{\dot\psi}(u, W, X) = -\frac{S_{\bar t}(W, X)
-#'   \cdot W}{\pi(W, X)\, S_u(W, X)\, G_u(W, X)}$$
+#' \deqn{\\gamma_\{\\dot\\psi\}(u, W, X) = -\\frac\{S_\{\\bar t\}(W, X)
+#'   \\cdot W\}\{\\pi(W, X)\\, S_u(W, X)\\, G_u(W, X)\}}
 #'
 #' **Code**: evaluates both arms' survival and derivatives
 #' separately, takes the difference. `dpsi_grid` stacks
-#' counterfactual grids for both arms: $Z_{\mathrm{ctf}} =
-#' [(u_m, 1, X_i); (u_m, 0, X_i)]$ with Riesz targets
-#' $r_1 > 0$ and $r_0 < 0$ (negated for ATE = $\psi^1 - \psi^0$).
-#' `W_fn(A) = 2A - 1` maps $\{0,1\} \to \{-1,+1\}$ for the
+#' counterfactual grids for both arms: \eqn{Z_\{\\mathrm\{ctf\}\} =
+#' [(u_m, 1, X_i); (u_m, 0, X_i)]} with Riesz targets
+#' \eqn{r_1 > 0} and \eqn{r_0 < 0} (negated for ATE = \eqn{\\psi^1 - \\psi^0}).
+#' `W_fn(A) = 2A - 1` maps \eqn{\\\{0,1\\\} \\to \\\{-1,+1\\\}} for the
 #' sign-flip dispersion.
 survival_probability_ate = function() {
   structure(list(
@@ -327,19 +327,19 @@ survival_probability_ate = function() {
 
 #' ## RMST TSM
 #'
-#' **Paper**: $\psi^w_{\mathrm{RMST}}(\lambda) =
-#' E\bigl[\int_0^{\bar t} S_u(w, X)\,du\bigr]$ (continuous) or
-#' $E\bigl[\sum_{u=1}^{\bar t} S_u(w, X)\bigr]$ (discrete).
+#' **Paper**: \eqn{\\psi^w_\{\\mathrm\{RMST\}\}(\\lambda) =
+#' E\\bigl[\\int_0^\{\\bar t\} S_u(w, X)\\,du\\bigr]} (continuous) or
+#' \eqn{E\\bigl[\\sum_\{u=1\}^\{\\bar t\} S_u(w, X)\\bigr]} (discrete).
 #'
 #' The Gateaux derivative (continuous):
-#' $\dot\psi^w_{Z,k} = -\int_k^{\bar t} S_u(w, X)\,du$
-#' — the tail integral of the survival curve from grid point $k$.
+#' \eqn{\\dot\\psi^w_\{Z,k\} = -\\int_k^\{\\bar t\} S_u(w, X)\\,du}
+#' — the tail integral of the survival curve from grid point \eqn{k}.
 #'
 #' **Code**: `direct` calls `rmst(dL, grid)` which computes
-#' $\int S_u\,du$ via the grid's quadrature weights.
+#' \eqn{\\int S_u\\,du} via the grid's quadrature weights.
 #' `dot_psi_Z` calls `rmst_dot` which precomputes the tail
 #' integral (discrete: rectangle sum; continuous: trapezoid
-#' cumulative) and returns a closure over $k$.
+#' cumulative) and returns a closure over \eqn{k}.
 rmst_tsm = function(arm) {
   structure(list(
     name = paste0("rmst.tsm", arm),
@@ -383,14 +383,14 @@ rmst_tsm = function(arm) {
 
 #' ## RMST ATE
 #'
-#' **Paper**: $\psi_{\mathrm{RMST}}(\lambda) =
-#' E\bigl[\int_0^{\bar t} S_u(1, X)\,du\bigr] -
-#' E\bigl[\int_0^{\bar t} S_u(0, X)\,du\bigr]$.
+#' **Paper**: \eqn{\\psi_\{\\mathrm\{RMST\}\}(\\lambda) =
+#' E\\bigl[\\int_0^\{\\bar t\} S_u(1, X)\\,du\\bigr] -
+#' E\\bigl[\\int_0^\{\\bar t\} S_u(0, X)\\,du\\bigr]}.
 #'
 #' Riesz representer (continuous):
-#' $$\gamma^{\mathrm{RMST}}(v, W, X) = -\frac{W \cdot
-#'   \int_v^{\bar t} S_u(W, X)\,du}{\pi(W, X)\, S_v(W, X)\,
-#'   G_v(W, X)}$$
+#' \deqn{\\gamma^\{\\mathrm\{RMST\}\}(v, W, X) = -\\frac\{W \\cdot
+#'   \\int_v^\{\\bar t\} S_u(W, X)\\,du\}\{\\pi(W, X)\\, S_v(W, X)\\,
+#'   G_v(W, X)\}}
 #'
 #' **Code**: same structure as `survival_probability_ate` —
 #' evaluates both arms, takes the difference. Uses `rmst_dot`

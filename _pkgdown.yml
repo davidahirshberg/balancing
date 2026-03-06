@@ -2,11 +2,7 @@ url: https://davidahirshberg.github.io/balancing/
 
 template:
   bootstrap: 5
-  includes:
-    in_header: |
-      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-      <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-      <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+  math-rendering: katex
 
 reference:
   - title: "Estimation"
