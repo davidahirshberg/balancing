@@ -19,7 +19,7 @@ library(balancing)
 # Single-outcome ATE with entropy balancing
 est <- balancing_estimate(
   Y = Y, A = A, X = X,
-  estimand = tsm_estimand(),
+  estimand = treatment_specific_mean(),
   kernel = matern_kernel(nu = 3/2),
   dispersion = entropy_dispersion(),
   tuning = lepski_tuning()

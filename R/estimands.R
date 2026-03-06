@@ -1,36 +1,59 @@
-## Estimands: the (psi, dot_psi) pair that defines what we estimate.
-##
-## Single-outcome estimands provide:
-##   theta(mu1, mu0)                   — plug-in functional
-##   se(mu1, mu0, n)                   — SE of direct term (for Lepski)
-##   dr(mu1, mu0, Y, W, gamma1, gamma0) — DR-corrected estimate
-##
-## Survival estimands provide:
-##
-##   direct(predict_dLambda, eval_Z, grid) — plug-in estimand per subject
-##   dot_psi_Z(predict_dLambda, eval_Z, grid)  — function(k) giving n-vector
-##   dpsi_grid(predict_dLambda, eval_Z, mesh_u, train_grid)
-##                                              — dpsi evaluation grid (Z, r)
-##
-##   predict_dLambda(k, Z) takes grid index k and covariate matrix Z (with
-##   treatment in col 1), returns n-vector of hazard increments dLambda_k.
-##   The estimand evaluates at whatever counterfactual Z it needs.
-##
-##   All survival operations use the product integral and grid operations
-##   from grid.R, unifying discrete and continuous time.
-##
-##   The estimand provides W_fn(A) returning the per-subject sign vector.
-##   The pipeline constructs signflip(gamma_dispersion, W_fn(A)) automatically.
-##
-## Both carry a $type field ("single_outcome" or "survival") for dispatch.
+#' # Estimand Constructors
+#'
+#' An estimand is the $(\psi, \dot\psi_Z)$ pair that defines what
+#' we estimate and what the balancing weights must balance.
+#'
+#' **Paper**: the estimand functional $\psi(\mu)$ maps a nuisance
+#' function $\mu$ (outcome model or hazard) to a scalar. Its
+#' Gateaux derivative $\dot\psi_Z(\mu)[h]$ defines the moment
+#' condition:
+#' $$\hat P\, \gamma(Z)\{Y - \mu(Z)\} \approx \dot\psi_Z(\mu)[h]
+#'   \quad \text{for all } h \in B_\rho$$
+#'
+#' The Riesz representer $\gamma_{\dot\psi}$ satisfies
+#' $\dot\psi_Z(h) = P\,\gamma_{\dot\psi}(Z)\,h(Z)$ and gives
+#' the DR correction:
+#' $$\hat\psi = \hat P\,\psi_Z(\hat\mu) +
+#'   \hat P\,\hat\gamma(Z)\{Y - \hat\mu(Z)\}$$
+#'
+#' ## Interface
+#'
+#' **Single-outcome** estimands provide:
+#'
+#' - `theta(mu1, mu0)` — plug-in functional
+#' - `se(mu1, mu0, n)` — SE of direct term (for Lepski)
+#' - `dr(mu1, mu0, Y, W, gamma1, gamma0)` — DR-corrected estimate + EIF
+#'
+#' **Survival** estimands provide:
+#'
+#' - `direct(predict_dLambda, eval_Z, grid)` — plug-in per subject
+#' - `dot_psi_Z(predict_dLambda, eval_Z, grid)` — function(k) giving
+#'   the Gateaux derivative as an n-vector
+#' - `dpsi_grid(predict_dLambda, eval_Z, mesh_u, train_grid)` —
+#'   dpsi evaluation grid $(Z, r)$ for gamma embedding
+#' - `W_fn(A)` — per-subject sign vector for signflip dispersion
+#'
+#' `predict_dLambda(k, Z)` takes grid index $k$ and covariate
+#' matrix $Z = (W, X)$, returns n-vector of hazard increments
+#' $d\Lambda_k$. The estimand evaluates at counterfactual arms
+#' as needed.
+#'
+#' Both types carry a `$type` field for dispatch.
 
 # ============================================================
 # Single-outcome estimands (spinoff4)
 # ============================================================
 
-#' Treatment-specific mean: E[mu_arm(X)].
-#' DR: direct + mean(gamma_arm * (Y - mu_arm)).
-tsm_estimand = function(arm = 1) {
+#' ## Treatment-Specific Mean (TSM)
+#'
+#' **Paper**: $\psi^w(\mu) = E\,\mu(w, X)$ with Riesz representer
+#' $\gamma_{\dot\psi^w}(W, X) = \mathbf{1}(W = w) / \pi_w(X)$.
+#'
+#' **Code**: `theta` = $\hat P\,\hat\mu_w(X)$. DR correction adds
+#' $\hat P\,\hat\gamma_w(Y - \hat\mu_w)$. EIF:
+#' $\hat V_i = \hat\mu_w(X_i) - \hat\psi + \hat\gamma_w(Z_i)
+#' \{Y_i - \hat\mu_w(Z_i)\}$.
+treatment_specific_mean = function(arm = 1) {
   structure(list(
     name = paste0("tsm", arm),
     type = "single_outcome",
@@ -64,8 +87,23 @@ tsm_estimand = function(arm = 1) {
   ), class = c("single_outcome_estimand", "estimand"))
 }
 
-#' Variance of CATE: Var(mu1(X) - mu0(X)).
-vcate_estimand = function() {
+#' ## Variance of CATE (VCATE)
+#'
+#' **Paper**: $\psi(\mu) = \mathrm{Var}(\mu_1(X) - \mu_0(X))$
+#' $= E[\tau(X)^2] - (E[\tau(X)])^2$ where $\tau(X) = \mu_1(X) -
+#' \mu_0(X)$. This is a second-order functional (quadratic in
+#' $\mu$).
+#'
+#' **Code**: DR correction uses two linear corrections:
+#' $\hat E[\tau^2]_{\mathrm{DR}} = \hat P\,\hat\tau^2 +
+#' 2\,\hat P\,\hat\tau\,(\hat\gamma_1 r_1 - \hat\gamma_0 r_0)$
+#' where $r_w = Y - \hat\mu_w$. The ATE correction is
+#' $\hat P\,\hat\tau + \hat P\,(\hat\gamma_1 r_1 - \hat\gamma_0 r_0)$.
+#' EIF:
+#' $\hat V_i = (\hat\tau_i - \hat\psi_{\mathrm{ATE}})^2 +
+#' 2(\hat\tau_i - \hat\psi_{\mathrm{ATE}})(\hat\gamma_{1i} r_{1i}
+#' - \hat\gamma_{0i} r_{0i}) - \hat\psi$.
+vcate = function() {
   structure(list(
     name = "vcate",
     type = "single_outcome",
@@ -99,8 +137,17 @@ vcate_estimand = function() {
   ), class = c("single_outcome_estimand", "estimand"))
 }
 
-#' Risk ratio: E[mu1(X)] / E[mu0(X)].
-rr_estimand = function() {
+#' ## Risk Ratio
+#'
+#' **Paper**: $\psi(\mu) = E[\mu_1(X)] / E[\mu_0(X)]$.
+#' The EIF uses the delta method on the ratio of two TSMs:
+#' $\hat V_i^{\mathrm{RR}} = \hat V_i^{(1)} / \hat\psi_0
+#' - (\hat\psi_1 / \hat\psi_0^2)\,\hat V_i^{(0)}$
+#' where $\hat V_i^{(w)}$ is the TSM EIF for arm $w$.
+#'
+#' **Code**: computes both arm-specific TSM DR estimates, takes
+#' the ratio, and constructs the delta-method EIF.
+risk_ratio = function() {
   structure(list(
     name = "rr",
     type = "single_outcome",
@@ -137,10 +184,26 @@ rr_estimand = function() {
 # Survival estimands (spinoff3)
 # ============================================================
 
-#' Survival probability TSM: E[S(tau | a, X)].
+#' ## Survival Probability TSM
 #'
-#' direct: S(tau | a, X) via product integral.
-#' dot_psi_Z(k): -S(tau | a, X) / (1 - dLambda_k(a, X)).
+#' **Paper**: $\psi^w(\lambda) = E[S_{\bar t}(w, X)]$ where
+#'
+#' - Discrete: $S_{\bar t}(w, X) = \prod_{u \in \mathcal{U}}
+#'   \{1 - \lambda_u(w, X)\}$
+#' - Continuous: $S_{\bar t}(w, X) = \exp\bigl(-\int_0^{\bar t}
+#'   \lambda_u(w, X)\,du\bigr)$
+#'
+#' The Gateaux derivative evaluates at counterfactual arm $w$:
+#'
+#' - Discrete: $\dot\psi^w_Z(\lambda)[h]_k =
+#'   -S_{\bar t}(w, X) / \{1 - \lambda_k(w, X)\}$
+#' - Continuous: $\dot\psi^w_Z(\lambda)[h]_k = -S_{\bar t}(w, X)$
+#'
+#' **Code**: `direct` materializes $d\Lambda$ at $(w, X)$ and
+#' calls `survival_probability`. `dot_psi_Z` calls `survival_probability_dot` which
+#' returns a closure over grid index $k$. `dpsi_grid` builds the
+#' counterfactual evaluation grid $Z_{\mathrm{ctf}} = (u_m, w, X_i)$
+#' for the gamma embedding vector $c_\gamma$.
 survival_probability_tsm = function(arm) {
   structure(list(
     name = paste0("survival.probability.tsm", arm),
@@ -152,21 +215,21 @@ survival_probability_tsm = function(arm) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
       dL = materialize_dLambda(\(k) predict_dLambda(k, Za), grid$M)
-      surv_prob(dL, grid)
+      survival_probability(dL, grid)
     },
 
     dot_psi_Z = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
       dL = materialize_dLambda(\(k) predict_dLambda(k, Za), grid$M)
-      surv_prob_dot(dL, grid)
+      survival_probability_dot(dL, grid)
     },
 
     dpsi_grid = function(predict_dLambda, eval_Z, mesh_u, train_grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       Za = cbind(arm, eval_X)
       dL = materialize_dLambda(\(k) predict_dLambda(k, Za), train_grid$M)
-      dp = surv_prob_dot(dL, train_grid)
+      dp = survival_probability_dot(dL, train_grid)
       mesh_k = match(mesh_u, train_grid$points)
       n_eval = nrow(eval_Z)
       n_mu = length(mesh_u)
@@ -182,29 +245,50 @@ survival_probability_tsm = function(arm) {
   ), class = c("survival_estimand", "estimand"))
 }
 
-#' Survival probability ATE: E[S(tau | 1, X)] - E[S(tau | 0, X)].
+#' ## Survival Probability ATE
 #'
-#' direct: S(tau|1,X) - S(tau|0,X) via product integral.
-#' dot_psi_Z(k): -S(tau|1,x)/(1-dL_k(1,x)) + S(tau|0,x)/(1-dL_k(0,x)).
+#' **Paper**: $\psi(\lambda) = E[S_{\bar t}(1, X)] -
+#' E[S_{\bar t}(0, X)]$ with Gateaux derivative
+#' $\dot\psi_Z(\lambda)[h]_k = \dot\psi^1_{Z,k} - \dot\psi^0_{Z,k}$.
+#'
+#' The Riesz representer (continuous time):
+#' $$\gamma_{\dot\psi}(u, W, X) = -\frac{S_{\bar t}(W, X)
+#'   \cdot W}{\pi(W, X)\, S_u(W, X)\, G_u(W, X)}$$
+#'
+#' **Code**: evaluates both arms' survival and derivatives
+#' separately, takes the difference. `dpsi_grid` stacks
+#' counterfactual grids for both arms: $Z_{\mathrm{ctf}} =
+#' [(u_m, 1, X_i); (u_m, 0, X_i)]$ with Riesz targets
+#' $r_1 > 0$ and $r_0 < 0$ (negated for ATE = $\psi^1 - \psi^0$).
+#' `W_fn(A) = 2A - 1` maps $\{0,1\} \to \{-1,+1\}$ for the
+#' signflip dispersion.
 survival_probability_ate = function() {
   structure(list(
     name = "survival.probability",
     type = "survival",
     W_fn = function(A) 2 * A - 1,
 
+    #' Sigma for the gamma dispersion.  For the ATE Riesz
+    #' representer, sign(gamma) = -sign(W): treated weights
+    #' are negative, control positive.  Using -W instead of
+    #' sign(r_hat) makes the sign constraint robust to
+    #' hazard estimates where lambda_hat > 1 could flip
+    #' sign(r_hat).
+    gamma_disp_sigma = function(A) -(2 * A - 1),
+
     direct = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), grid$M)
       dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), grid$M)
-      surv_prob(dL1, grid) - surv_prob(dL0, grid)
+      survival_probability(dL1, grid) - survival_probability(dL0, grid)
     },
 
     dot_psi_Z = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), grid$M)
       dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), grid$M)
-      d1 = surv_prob_dot(dL1, grid)
-      d0 = surv_prob_dot(dL0, grid)
+      d1 = survival_probability_dot(dL1, grid)
+      d0 = survival_probability_dot(dL0, grid)
       function(k) d1(k) - d0(k)
     },
 
@@ -212,15 +296,15 @@ survival_probability_ate = function() {
     dot_psi_arm = function(predict_dLambda, eval_Z, grid, arm) {
       eval_X = eval_Z[, -1, drop = FALSE]
       dL = materialize_dLambda(\(k) predict_dLambda(k, cbind(arm, eval_X)), grid$M)
-      surv_prob_dot(dL, grid)
+      survival_probability_dot(dL, grid)
     },
 
     dpsi_grid = function(predict_dLambda, eval_Z, mesh_u, train_grid) {
       eval_X = eval_Z[, -1, drop = FALSE]
       dL1 = materialize_dLambda(\(k) predict_dLambda(k, cbind(1, eval_X)), train_grid$M)
       dL0 = materialize_dLambda(\(k) predict_dLambda(k, cbind(0, eval_X)), train_grid$M)
-      dp1 = surv_prob_dot(dL1, train_grid)
-      dp0 = surv_prob_dot(dL0, train_grid)
+      dp1 = survival_probability_dot(dL1, train_grid)
+      dp0 = survival_probability_dot(dL0, train_grid)
       mesh_k = match(mesh_u, train_grid$points)
       n_eval = nrow(eval_Z)
       n_mu = length(mesh_u)
@@ -241,7 +325,21 @@ survival_probability_ate = function() {
 
 # ---- RMST estimands ----
 
-#' RMST TSM: E[int_0^tau S(u | a, X) du].
+#' ## RMST TSM
+#'
+#' **Paper**: $\psi^w_{\mathrm{RMST}}(\lambda) =
+#' E\bigl[\int_0^{\bar t} S_u(w, X)\,du\bigr]$ (continuous) or
+#' $E\bigl[\sum_{u=1}^{\bar t} S_u(w, X)\bigr]$ (discrete).
+#'
+#' The Gateaux derivative (continuous):
+#' $\dot\psi^w_{Z,k} = -\int_k^{\bar t} S_u(w, X)\,du$
+#' — the tail integral of the survival curve from grid point $k$.
+#'
+#' **Code**: `direct` calls `rmst(dL, grid)` which computes
+#' $\int S_u\,du$ via the grid's quadrature weights.
+#' `dot_psi_Z` calls `rmst_dot` which precomputes the tail
+#' integral (discrete: rectangle sum; continuous: trapezoid
+#' cumulative) and returns a closure over $k$.
 rmst_tsm = function(arm) {
   structure(list(
     name = paste0("rmst.tsm", arm),
@@ -283,12 +381,26 @@ rmst_tsm = function(arm) {
   ), class = c("survival_estimand", "estimand"))
 }
 
-#' RMST ATE: E[int_0^tau S(u|1,X) du] - E[int_0^tau S(u|0,X) du].
+#' ## RMST ATE
+#'
+#' **Paper**: $\psi_{\mathrm{RMST}}(\lambda) =
+#' E\bigl[\int_0^{\bar t} S_u(1, X)\,du\bigr] -
+#' E\bigl[\int_0^{\bar t} S_u(0, X)\,du\bigr]$.
+#'
+#' Riesz representer (continuous):
+#' $$\gamma^{\mathrm{RMST}}(v, W, X) = -\frac{W \cdot
+#'   \int_v^{\bar t} S_u(W, X)\,du}{\pi(W, X)\, S_v(W, X)\,
+#'   G_v(W, X)}$$
+#'
+#' **Code**: same structure as `survival_probability_ate` —
+#' evaluates both arms, takes the difference. Uses `rmst_dot`
+#' for the tail-integral derivative.
 rmst_ate = function() {
   structure(list(
     name = "rmst",
     type = "survival",
     W_fn = function(A) 2 * A - 1,
+    gamma_disp_sigma = function(A) -(2 * A - 1),
 
     direct = function(predict_dLambda, eval_Z, grid) {
       eval_X = eval_Z[, -1, drop = FALSE]

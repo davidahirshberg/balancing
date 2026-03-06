@@ -26,6 +26,15 @@ discrete_grid = function(mesh, horizon = max(mesh), du = NULL) {
        weights = rep(du, M))
 }
 
+#' Continuous training grid: rectangle weights on mesh points.
+#' Same points as discrete_grid but uses exp(-integral) product integral.
+continuous_training_grid = function(mesh, du = NULL) {
+  M = length(mesh)
+  if (is.null(du)) du = mesh[1]
+  list(points = mesh, M = M, du = du, horizon = max(mesh),
+       discrete = FALSE, weights = rep(du, M))
+}
+
 #' Continuous grid: fine evaluation mesh with Simpson quadrature.
 #' Q must be even.
 continuous_grid = function(horizon, Q) {
@@ -77,7 +86,7 @@ surv_curve = function(dLambda, grid = NULL) {
 #' @param dLambda Matrix (n x M).
 #' @param grid Grid object. If NULL, uses discrete.
 #' @return Vector (n).
-surv_prob = function(dLambda, grid = NULL) {
+survival_probability = function(dLambda, grid = NULL) {
   n = nrow(dLambda); M = ncol(dLambda)
   if (!is.null(grid) && !grid$discrete) {
     # int lambda du = sum w_k * lambda_k = sum (w_k / du) * dLambda_k
@@ -106,8 +115,8 @@ surv_prob = function(dLambda, grid = NULL) {
 #' @param dLambda Matrix (n x M).
 #' @param grid Grid object. If NULL, uses discrete.
 #' @return Function(k) returning n-vector.
-surv_prob_dot = function(dLambda, grid = NULL) {
-  S_tau = surv_prob(dLambda, grid)
+survival_probability_dot = function(dLambda, grid = NULL) {
+  S_tau = survival_probability(dLambda, grid)
   if (!is.null(grid) && !grid$discrete) {
     return(function(k) -S_tau)
   }

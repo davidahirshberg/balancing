@@ -14,9 +14,9 @@ export(signflip)
 export(kernel_bregman)
 
 # Estimands
-export(tsm_estimand)
-export(vcate_estimand)
-export(rr_estimand)
+export(treatment_specific_mean)
+export(vcate)
+export(risk_ratio)
 export(survival_probability_ate)
 export(survival_probability_tsm)
 export(rmst_ate)
