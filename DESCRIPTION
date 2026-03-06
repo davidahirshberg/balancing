@@ -19,7 +19,7 @@ Collate:
     'grid.R'
     'estimands.R'
     'survival.R'
-    'surv_estimate.R'
+    'survival_estimate.R'
     'estimate.R'
     'tuning.R'
     'dgp.R'

@@ -1,8 +1,8 @@
 # Test the unified Bregman solver.
 
-test_that("signflip(entropy) produces correctly-signed weights", {
+test_that("sign_flip_dispersion(entropy) produces correctly-signed weights", {
   pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
-  for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
+  for (f in c("utils.R", "kernel.R", "dispersion.R", "solver.R"))
     source(file.path(pkg_dir, f))
 
   set.seed(42)
@@ -19,11 +19,12 @@ test_that("signflip(entropy) produces correctly-signed weights", {
   Z1 = Z; Z1[, 1] = 1
   c_gam = colSums(kernel_matrix(Z1, Z, kern)) / n
 
-  disp = signflip(entropy_dispersion(), W)
+  disp = sign_flip_dispersion(entropy_base, W)
   fit = kernel_bregman(Z, kern, eta = 1,
                        dispersion = disp, target = c_gam, K = K)
 
-  gamma = predict(fit, Z)
+  phi = .phi(fit, Z)
+  gamma = .dchis(disp, phi)
 
   # Treated (W=+1) should have positive weights
   expect_true(all(gamma[W == 1] > 0))
@@ -31,9 +32,9 @@ test_that("signflip(entropy) produces correctly-signed weights", {
   expect_true(all(gamma[W == -1] < 0))
 })
 
-test_that("signflip(pos_quadratic) produces correctly-signed weights", {
+test_that("sign_flip_dispersion(pos_quadratic) produces correctly-signed weights", {
   pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
-  for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
+  for (f in c("utils.R", "kernel.R", "dispersion.R", "solver.R"))
     source(file.path(pkg_dir, f))
 
   set.seed(42)
@@ -49,18 +50,19 @@ test_that("signflip(pos_quadratic) produces correctly-signed weights", {
   Z1 = Z; Z1[, 1] = 1
   c_gam = colSums(kernel_matrix(Z1, Z, kern)) / n
 
-  disp = signflip(pos_quadratic_dispersion(), W)
+  disp = sign_flip_dispersion(pos_quadratic_base, W)
   fit = kernel_bregman(Z, kern, eta = 1,
                        dispersion = disp, target = c_gam, K = K)
 
-  gamma = predict(fit, Z)
+  phi = .phi(fit, Z)
+  gamma = .dchis(disp, phi)
   expect_true(all(gamma[W == 1] >= -1e-10))
   expect_true(all(gamma[W == -1] <= 1e-10))
 })
 
 test_that("quadratic_dispersion gives correct phi", {
   pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
-  for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
+  for (f in c("utils.R", "kernel.R", "dispersion.R", "solver.R"))
     source(file.path(pkg_dir, f))
 
   set.seed(42)
@@ -73,11 +75,11 @@ test_that("quadratic_dispersion gives correct phi", {
   eta_val = 0.5
 
   B = null_basis(Z, kern)
-  tgt = dpsi_from_response(Y, K, B)
+  tgt = split_target(project_target(Z, kern, list(Z = Z, r = Y), K_cross = K), n)
   fit = kernel_bregman(Z, kern, eta = eta_val,
                        dispersion = quadratic_dispersion(),
                        target = tgt$target, target_null = tgt$target_null,
-                       K = K)
+                       K = K, maxiter = 100, tol = 1e-10)
 
   # For quadratic dispersion: the optimal phi satisfies
   #   phi_i + 2eta (K^{-1} (phi - B beta))_i = Y_i
@@ -112,7 +114,7 @@ test_that("quadratic_dispersion gives correct phi", {
 
 test_that("no-null-space kernel matches pure ridge", {
   pkg_dir = file.path(Sys.getenv("BALANCING_DIR", "/Users/skip/work/balancing"), "R")
-  for (f in c("utils.R", "kernels.R", "dispersions.R", "bregman.R"))
+  for (f in c("utils.R", "kernel.R", "dispersion.R", "solver.R"))
     source(file.path(pkg_dir, f))
 
   set.seed(42)
@@ -125,10 +127,11 @@ test_that("no-null-space kernel matches pure ridge", {
   eta_val = 0.5
 
   B = null_basis(Z, kern)
-  tgt = dpsi_from_response(Y, K, B)
+  tgt = split_target(project_target(Z, kern, list(Z = Z, r = Y), K_cross = K), n)
   fit = kernel_bregman(Z, kern, eta = eta_val,
                        dispersion = quadratic_dispersion(),
-                       target = tgt$target, K = K)
+                       target = tgt$target, K = K,
+                       maxiter = 100, tol = 1e-10)
 
   # FOC: Ks(Ks + n*eta*I) alpha = target, where Ks is the solver's nuggeted K
   Ks = fit$K

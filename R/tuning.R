@@ -1,16 +1,16 @@
-## Tuning: pluggable regularization selection.
-##
-## A tuning strategy provides $select(ctx), where ctx is a tuning context
-## with precomputed vectors from the grid sweep.
-##
-## Context fields:
-##   ctx$eta_grid      — the regularization grid
-##   ctx$n             — sample size
-##   ctx$dir_val()     — plug-in functional at each grid point
-##   ctx$dir_se()      — SE of plug-in functional
-##   ctx$loo_scores()  — CV loss at each grid point
-##
-## Or the tuning argument is a bare number / function, coerced by as_tuning().
+#' Tuning: pluggable regularization selection.
+#'
+#' A tuning strategy provides $select(ctx), where ctx is a tuning context
+#' with precomputed vectors from the grid sweep.
+#'
+#' Context fields:
+#'   ctx$eta_grid      — the regularization grid
+#'   ctx$n             — sample size
+#'   ctx$dir_val()     — plug-in functional at each grid point
+#'   ctx$dir_se()      — SE of plug-in functional
+#'   ctx$loo_scores()  — CV loss at each grid point
+#'
+#' Or the tuning argument is a bare number / function, coerced by as_tuning().
 
 # ============================================================
 # Tuning context

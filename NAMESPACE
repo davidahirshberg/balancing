@@ -1,6 +1,6 @@
 # Kernels
 export(matern_kernel)
-export(direct_product)
+export(direct_product_kernel)
 export(kernel_matrix)
 
 # Dispersions
@@ -28,16 +28,14 @@ export(survival_effect)
 export(mesh_project)
 export(fit_lambda)
 export(fit_gamma)
-export(estimate)
-export(aggregate_dr)
+export(pool_folds)
 export(discrete_grid)
 export(continuous_grid)
 
 # Bootstrap
 export(bootstrap)
-export(ci_t)
-export(ci_pct)
-export(n_bad)
+export(bootstrap_t_interval)
+export(percentile_bootstrap_interval)
 
 # Tuning
 export(lepski_tuning)
@@ -56,9 +54,8 @@ S3method(.chis, dispersion)
 S3method(.bind, kernel_bregman)
 S3method(.phi, kernel_bregman)
 S3method("[", kernel_bregman)
-S3method(bootstrap, dr_result)
-S3method(ci_t, boot_result)
-S3method(ci_pct, boot_result)
-S3method(n_bad, boot_result)
+S3method(bootstrap, effect_estimate)
+S3method(bootstrap_t_interval, bootstrapped_estimate)
+S3method(percentile_bootstrap_interval, bootstrapped_estimate)
 S3method(balancing_estimate, survival_estimand)
-S3method(balancing_estimate, single_outcome_estimand)
+S3method(balancing_estimate, effect_estimand)

@@ -100,7 +100,7 @@ matern_kernel = function(sigma = 1, nu = 3/2, scale = NULL,
 }
 
 
-#' ### `direct_product`
+#' ### `direct_product_kernel`
 #'
 #' **Paper**: the product kernel
 #' $$k\bigl((w,x),(w',x')\bigr) = k_X(x,x')\,\mathbf{1}\{w=w'\}$$
@@ -113,7 +113,7 @@ matern_kernel = function(sigma = 1, nu = 3/2, scale = NULL,
 #' grouping variable(s). `levels` declares the set of
 #' treatment values (data must only contain declared levels).
 #' The kernel matrix is computed as $K_X \odot \mathbf{1}\{W_i = W_j\}$.
-direct_product = function(k_x, iw = 1, levels) {
+direct_product_kernel = function(k_x, iw = 1, levels) {
   # Expand list of per-column levels to pasted Cartesian product
   if (is.list(levels)) {
     grid = do.call(expand.grid, levels)
@@ -130,7 +130,7 @@ direct_product = function(k_x, iw = 1, levels) {
          else apply(Z[, iw, drop = FALSE], 1, paste, collapse = "_")
     bad = setdiff(unique(gv), levels)
     if (length(bad) > 0)
-      stop("direct_product: data contains undeclared levels: ",
+      stop("direct_product_kernel: data contains undeclared levels: ",
            paste(head(bad, 5), collapse = ", "))
     n = nrow(Z)
     B = matrix(0, n, length(levels) * d_base)

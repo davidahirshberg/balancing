@@ -97,7 +97,7 @@ for (f in c("R/tuning.R", "R/dgp.R"))
   source(f)
 
 # Helpers: gamma_measure, compute_direct, correction_terms, build_gamma_correction,
-# dr_fold/crossfit/bootstrap now come from R/surv_estimate.R.
+# dr_fold/crossfit/bootstrap now come from R/survival_estimate.R.
 
 
 get_dgp_fn = function(dgp_name) {
@@ -122,9 +122,9 @@ make_kern = function(kern_name, mesh = NULL) {
   # levels defines the direct product decomposition of the RKHS.
   # Must be explicit for seminorm kernels — otherwise null_basis dimensions
   # depend on which (u, W) combos appear in the data, breaking prediction.
-  if (kern_name == "pham") direct_product(base, iw = c(1, 2), levels = list(mesh, c(0, 1)))
-  else if (kern_name == "pham_normed") direct_product(base_normed, iw = c(1, 2), levels = list(mesh, c(0, 1)))
-  else if (kern_name == "smooth") direct_product(base, iw = 2, levels = c(0, 1))
+  if (kern_name == "pham") direct_product_kernel(base, iw = c(1, 2), levels = list(mesh, c(0, 1)))
+  else if (kern_name == "pham_normed") direct_product_kernel(base_normed, iw = c(1, 2), levels = list(mesh, c(0, 1)))
+  else if (kern_name == "smooth") direct_product_kernel(base, iw = 2, levels = c(0, 1))
   else stop("Unknown kernel: ", kern_name)
 }
 make_lambda_disp = function(name) {
@@ -522,7 +522,7 @@ one_rep = function(rep_id) {
         list(label = "cv",     tuning = cv_tuning()))
 
       # Estimate + bootstrap at a selected (s2_lam, s2_gam).
-      # Uses survival_effect from the package to get a dr_result.
+      # Uses survival_effect from the package to get a effect_estimate.
       estimate_at = function(s2_lam, s2_gam) {
         survival_effect(observations, kern, estimand_obj, lambda_disp,
                         eta_lam = s2_lam / n, eta_gam = s2_gam / n,
@@ -531,7 +531,7 @@ one_rep = function(rep_id) {
                         gamma_disp_fn = gamma_disp_fn)
       }
 
-      # Build a coverage row from a dr_result + optional boot_result.
+      # Build a coverage row from a effect_estimate + optional bootstrapped_estimate.
       coverage_row = function(result, label, s2_lam, s2_gam, boot = NULL) {
         all_boot[[length(all_boot) + 1]] <<- list(
           rep = rep_id, method = mname, estimand = en, tuning = label,
@@ -549,19 +549,19 @@ one_rep = function(rep_id) {
         row$ci_width_eif = diff(ci_eif); row$ci_width_amle = diff(ci_amle)
 
         if (!is.null(boot)) {
-          nb = n_bad.boot_result(boot)
+          nb = sum(is.na(boot$boot_ates) | is.nan(boot$boot_ates) | abs(boot$boot_ates) > 100)
           if (nb > 0)
             logger("%s %s %s: %d/%d bootstrap reps degenerate",
                 mname, en, label, nb, length(boot$boot_ates))
-          row$se_boot = se.boot_result(boot)
+          row$se_boot = bootstrap_se(boot)
           row$n_boot_bad = nb
 
-          bt = ci_t(boot)
+          bt = bootstrap_t_interval(boot)
           if (!any(is.na(bt))) {
             row$covers_boot_t = truth >= bt[1] & truth <= bt[2]
             row$ci_width_boot_t = diff(bt)
           }
-          bp = ci_pct(boot)
+          bp = percentile_bootstrap_interval(boot)
           if (!any(is.na(bp))) {
             row$covers_pct = truth >= bp[1] & truth <= bp[2]
             row$ci_width_pct = diff(bp)

@@ -31,7 +31,7 @@
 #'   the Gateaux derivative as an n-vector
 #' - `dpsi_grid(predict_dLambda, eval_Z, mesh_u, train_grid)` —
 #'   dpsi evaluation grid $(Z, r)$ for gamma embedding
-#' - `W_fn(A)` — per-subject sign vector for signflip dispersion
+#' - `W_fn(A)` — per-subject sign vector for sign-flip dispersion
 #'
 #' `predict_dLambda(k, Z)` takes grid index $k$ and covariate
 #' matrix $Z = (W, X)$, returns n-vector of hazard increments
@@ -84,7 +84,7 @@ treatment_specific_mean = function(arm = 1) {
       se = sd(eif) / sqrt(n)
       list(est = est, se = se, eif = eif)
     }
-  ), class = c("single_outcome_estimand", "estimand"))
+  ), class = c("effect_estimand", "estimand"))
 }
 
 #' ## Variance of CATE (VCATE)
@@ -134,7 +134,7 @@ vcate = function() {
       se = sd(eif) / sqrt(n)
       list(est = vcate, se = se, eif = eif, ate_dr = ate_dr)
     }
-  ), class = c("single_outcome_estimand", "estimand"))
+  ), class = c("effect_estimand", "estimand"))
 }
 
 #' ## Risk Ratio
@@ -177,7 +177,7 @@ risk_ratio = function() {
       se = sd(eif) / sqrt(n)
       list(est = rr, se = se, eif = eif, tsm1 = tsm1, tsm0 = tsm0)
     }
-  ), class = c("single_outcome_estimand", "estimand"))
+  ), class = c("effect_estimand", "estimand"))
 }
 
 # ============================================================
@@ -261,7 +261,7 @@ survival_probability_tsm = function(arm) {
 #' [(u_m, 1, X_i); (u_m, 0, X_i)]$ with Riesz targets
 #' $r_1 > 0$ and $r_0 < 0$ (negated for ATE = $\psi^1 - \psi^0$).
 #' `W_fn(A) = 2A - 1` maps $\{0,1\} \to \{-1,+1\}$ for the
-#' signflip dispersion.
+#' sign-flip dispersion.
 survival_probability_ate = function() {
   structure(list(
     name = "survival.probability",

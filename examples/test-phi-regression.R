@@ -30,7 +30,7 @@ D = rbinom(n, 1, 0.7)
 Z = cbind(A, X)
 
 base = matern_kernel(sigma = 2, nu = 3/2)
-kern = direct_product(base, iw = 2, levels = c(0, 1))
+kern = direct_product_kernel(base, iw = 2, levels = c(0, 1))
 
 # Build mesh projection (creates stacked data with time column)
 observations = list(T_obs = T_obs, D = D, Z = Z)

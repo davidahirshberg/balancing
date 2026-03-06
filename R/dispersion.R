@@ -134,7 +134,7 @@ shifted_entropy_dispersion = function() dispersion(shifted_entropy_base)
 #' before applying the base $\dot\chi^*$.
 sign_flip_dispersion = function(base, W) dispersion(base, sigma = W)
 
-#' ### `target_scaled_entropy`
+#' ### `target_scaled_entropy_dispersion`
 #'
 #' **Paper**: $\chi^*_Z(\phi) = r\,\phi + e^{\mathrm{sign}(r)\,\phi}$
 #' giving $\hat\gamma = r + \mathrm{sign}(r)\,e^{\mathrm{sign}(r)\,\phi}$.
@@ -143,10 +143,10 @@ sign_flip_dispersion = function(base, W) dispersion(base, sigma = W)
 #'
 #' **Code**: `dispersion(entropy_base, offset = r, sigma = sign(r))`.
 #' This is the default weight dispersion in the survival pipeline.
-target_scaled_entropy = function(r)
+target_scaled_entropy_dispersion = function(r)
   dispersion(entropy_base, offset = r, sigma = sign(r))
 
-#' ### `variance_weighted_quadratic`
+#' ### `variance_weighted_quadratic_dispersion`
 #'
 #' **Paper**: $\chi_Z(\gamma) = \frac{v}{2}(\gamma - r)^2$ on
 #' $\mathrm{sign}(\gamma) = \mathrm{sign}(r)$, $|\gamma| \ge |r|$.
@@ -154,5 +154,5 @@ target_scaled_entropy = function(r)
 #'
 #' **Code**: `dispersion(pos_quadratic_base, offset = r,
 #' sigma = sign(r), v = v)`.
-variance_weighted_quadratic = function(r, v)
+variance_weighted_quadratic_dispersion = function(r, v)
   dispersion(pos_quadratic_base, offset = r, sigma = sign(r), v = v)

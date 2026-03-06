@@ -1,0 +1,4 @@
+rep 1 started (cell pham_discrete_2) 
+1S done 
+--- method: Pham_quad (kern=pham, disp=quadratic, time=discrete) --- 
+Pham_quad lambda sweep: 0.3s 

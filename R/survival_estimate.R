@@ -16,7 +16,7 @@
 #'   E_U\,\hat\gamma_i(U)\{Y_i^U - \hat\lambda_U(Z_i)\}$$
 #'
 #' **Pipeline**: `mesh_project` $\to$ `fit_lambda` $\to$ `fit_gamma`
-#' $\to$ `estimate` $\to$ `aggregate_dr`, wrapped by `survival_effect`.
+#' $\to$ `estimate` $\to$ `pool_folds`, wrapped by `survival_effect`.
 #'
 #' ## Per-fold primitives
 #'
@@ -26,11 +26,11 @@
 #'
 #' ## Aggregation
 #'
-#' - `aggregate_dr`: pool per-fold $\hat V_i$ into a `dr_result`
+#' - `pool_folds`: pool per-fold $\hat V_i$ into a `effect_estimate`
 #'
 #' ## Bootstrap
 #'
-#' - `bootstrap.dr_result`: Poisson multiplier bootstrap with
+#' - `bootstrap.effect_estimate`: Poisson multiplier bootstrap with
 #'   one-step Newton refit
 
 # ============================================================
@@ -290,7 +290,7 @@ fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL,
 #' The `gamma_disp_fn` maps the target $r$ to a Z-dependent
 #' dispersion (default: target-scaled entropy).
 fit_gamma = function(mp, lambda_fit, kern, eta, estimand,
-                     gamma_disp_fn = target_scaled_entropy,
+                     gamma_disp_fn = target_scaled_entropy_dispersion,
                      gamma_base = entropy_base,
                      warm = NULL,
                      gamma_target = NULL, gamma_target_null = NULL,
@@ -384,7 +384,7 @@ estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
 # Aggregation
 # ============================================================
 
-#' ## `aggregate_dr`
+#' ## `pool_folds`
 #'
 #' **Paper** (eq:crossfit): pool crossfit folds:
 #' $$\hat\psi = \frac{1}{n}\sum_i \hat V_i, \quad
@@ -395,11 +395,11 @@ estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
 #' \mathrm{sd}(V)/\sqrt{n}$, and `se_amle` $= \sqrt{(\mathrm{Var}(
 #' \text{direct}) + \bar{\text{noise\_var}})/n}$ (AMLE variance
 #' estimate using plug-in variance + noise variance separately).
-aggregate_dr = function(mps, lambda_fits, gamma_results, fold_estimates,
+pool_folds = function(mps, lambda_fits, gamma_results, fold_estimates,
                         kern, eta_gam, lambda_disp, estimand,
                         horizon, grid,
                         kern_gamma = kern,
-                        gamma_disp_fn = target_scaled_entropy,
+                        gamma_disp_fn = target_scaled_entropy_dispersion,
                         gamma_base = entropy_base) {
   n = sum(sapply(mps, `[[`, "n_eval"))
   terms = rep(NA_real_, n)
@@ -427,7 +427,7 @@ aggregate_dr = function(mps, lambda_fits, gamma_results, fold_estimates,
          estimand = estimand,
          horizon = horizon, grid = grid,
          gamma_disp_fn = gamma_disp_fn, gamma_base = gamma_base),
-    class = "dr_result")
+    class = "effect_estimate")
 }
 
 # ============================================================
@@ -438,7 +438,7 @@ aggregate_dr = function(mps, lambda_fits, gamma_results, fold_estimates,
 #'
 #' Convenience wrapper: runs the full pipeline
 #' `mesh_project` $\to$ `fit_lambda` $\to$ `fit_gamma` $\to$
-#' `estimate` $\to$ `aggregate_dr`.
+#' `estimate` $\to$ `pool_folds`.
 #'
 #' Accepts pre-computed intermediate results (`mps`,
 #' `lambda_fits`, `gamma_results`) to allow reuse across
@@ -447,7 +447,7 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
                            eta_lam, eta_gam, horizon,
                            M_train = 15, n_folds = 2, Q_comp = 50,
                            discrete = FALSE, log = null_logger,
-                           gamma_disp_fn = target_scaled_entropy,
+                           gamma_disp_fn = target_scaled_entropy_dispersion,
                            gamma_base = entropy_base,
                            kern_gamma = kern,
                            mps = NULL, lambda_fits = NULL, gamma_results = NULL) {
@@ -472,7 +472,7 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
   fold_estimates = lapply(seq_along(mps), function(ff)
     estimate(mps[[ff]], lambda_fits[[ff]], gamma_results[[ff]], estimand, grid))
 
-  aggregate_dr(mps, lambda_fits, gamma_results, fold_estimates,
+  pool_folds(mps, lambda_fits, gamma_results, fold_estimates,
                kern = kern, eta_gam = eta_gam, lambda_disp = lambda_disp,
                estimand = estimand, horizon = horizon, grid = grid,
                kern_gamma = kern_gamma,
@@ -481,7 +481,7 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
 
 #' ## Bootstrap
 #'
-#' ### `bootstrap.dr_result`
+#' ### `bootstrap.effect_estimate`
 #'
 #' **Paper** (spinoff3, sec:bootstrap): Poisson multiplier
 #' bootstrap. For each replicate $b$:
@@ -502,7 +502,7 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
 #' `fit_gamma` with `maxiter = 1` (warm-started from original).
 bootstrap = function(obj, ...) UseMethod("bootstrap")
 
-bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
+bootstrap.effect_estimate = function(obj, n_reps, log = null_logger, ...) {
   n = obj$n
   kern = obj$kern; lambda_disp = obj$lambda_disp
   kern_gamma = if (!is.null(obj$kern_gamma)) obj$kern_gamma else kern
@@ -594,22 +594,22 @@ bootstrap.dr_result = function(obj, n_reps, log = null_logger, ...) {
   structure(
     list(boot_ates = boot_ates, boot_ses = boot_ses,
          est = obj$est, se_amle = obj$se_amle),
-    class = "boot_result")
+    class = "bootstrapped_estimate")
 }
 
 # ============================================================
-# boot_result methods
+# bootstrapped_estimate methods
 # ============================================================
 
-se.boot_result = function(obj, ...) sd(obj$boot_ates, na.rm = TRUE)
+bootstrap_se = function(obj) sd(obj$boot_ates, na.rm = TRUE)
 
 #' Bootstrap confidence interval (t-method).
-#' @param obj A `boot_result` object.
+#' @param obj A `bootstrapped_estimate` object.
 #' @param level Confidence level (default 0.95).
 #' @param ... Additional arguments (unused).
 #' @return Length-2 vector (lower, upper).
-ci_t = function(obj, ...) UseMethod("ci_t")
-ci_t.boot_result = function(obj, level = 0.95, ...) {
+bootstrap_t_interval = function(obj, ...) UseMethod("bootstrap_t_interval")
+bootstrap_t_interval.bootstrapped_estimate = function(obj, level = 0.95, ...) {
   good = !is.na(obj$boot_ates) & !is.nan(obj$boot_ates) & abs(obj$boot_ates) < 100 &
          !is.na(obj$boot_ses) & obj$boot_ses > 0
   if (sum(good) < 10) return(c(NA, NA))
@@ -620,23 +620,15 @@ ci_t.boot_result = function(obj, level = 0.95, ...) {
 }
 
 #' Bootstrap confidence interval (percentile method).
-#' @param obj A `boot_result` object.
+#' @param obj A `bootstrapped_estimate` object.
 #' @param level Confidence level (default 0.95).
 #' @param ... Additional arguments (unused).
 #' @return Length-2 vector (lower, upper).
-ci_pct = function(obj, ...) UseMethod("ci_pct")
-ci_pct.boot_result = function(obj, level = 0.95, ...) {
+percentile_bootstrap_interval = function(obj, ...) UseMethod("percentile_bootstrap_interval")
+percentile_bootstrap_interval.bootstrapped_estimate = function(obj, level = 0.95, ...) {
   good = !is.na(obj$boot_ates) & !is.nan(obj$boot_ates) & abs(obj$boot_ates) < 100
   if (sum(good) < 10) return(c(NA, NA))
   alpha = 1 - level
   unname(quantile(obj$boot_ates[good], c(alpha / 2, 1 - alpha / 2)))
 }
 
-#' Count failed bootstrap replicates.
-#' @param obj A `boot_result` object.
-#' @param ... Additional arguments (unused).
-#' @return Integer count of NA, NaN, or extreme bootstrap estimates.
-n_bad = function(obj, ...) UseMethod("n_bad")
-n_bad.boot_result = function(obj, ...) {
-  sum(is.na(obj$boot_ates) | is.nan(obj$boot_ates) | abs(obj$boot_ates) > 100)
-}

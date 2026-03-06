@@ -14,7 +14,7 @@ balancing_estimate.survival_estimand = function(estimand, ...) {
   survival_effect(estimand = estimand, ...)
 }
 
-#' Single-outcome estimands: not yet implemented.
-balancing_estimate.single_outcome_estimand = function(estimand, ...) {
+#' Effect estimands: not yet implemented.
+balancing_estimate.effect_estimand = function(estimand, ...) {
   stop("single-outcome pipeline not yet implemented; use the estimand's $dr method directly")
 }

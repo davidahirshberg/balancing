@@ -12,6 +12,6 @@ if (!identical(Sys.getenv("DEVTOOLS_LOAD"), "true") &&
   source("R/grid.R")
   source("R/estimands.R")
   source("R/survival.R")
-  source("R/surv_estimate.R")
+  source("R/survival_estimate.R")
   source("R/estimate.R")
 }

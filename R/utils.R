@@ -102,7 +102,8 @@ outerproduct = function(A, B, K) {
 # for geometry-appropriate stopping (e.g. D_chi*(phi_t, phi_{t-1})).
 .tr_newton = function(fg, hv, theta0, precond = NULL,
                       maxiter = 50, cg_maxiter = 50, tol = 1e-6,
-                      delta0 = 1.0, conv_fn = NULL, weight_fn = NULL) {
+                      delta0 = 1.0, conv_fn = NULL, weight_fn = NULL,
+                      dual_map = NULL) {
   theta = theta0
   res = fg(theta)
   val = res$val; grad = res$grad
@@ -111,16 +112,28 @@ outerproduct = function(A, B, K) {
                      gnorm = numeric(0), delta = numeric(0),
                      accepted = logical(0), bregman = numeric(0),
                      wdelta = numeric(0))
+  gnorm0 = sqrt(sum(grad^2))
 
   for (iter in 1:maxiter) {
     gnorm = sqrt(sum(grad^2))
     if (is.null(conv_fn) && gnorm < tol) break
 
+    # Freeze dual_map at current theta for CG subproblem.
+    # CG needs a linear map (step -> metric-space vector);
+    # dual_map(theta, .) is linear in the step for fixed theta.
+    step_map = if (!is.null(dual_map)) {
+      th = theta  # capture current theta
+      function(p) dual_map(th, p)
+    } else NULL
+    snorm = if (!is.null(step_map)) {
+      function(p) sqrt(mean(step_map(p)^2))
+    } else function(p) sqrt(sum(p^2))
+
     # Steihaug-Toint CG: approximately solve H·p = -g within trust region.
-    # If we hit the boundary or negative curvature, return the boundary point.
     p = .steihaug_cg(function(v) hv(theta, v), -grad, delta,
                      precond = precond, maxiter = cg_maxiter,
-                     tol = min(0.5, sqrt(gnorm)) * gnorm)
+                     tol = min(0.5, sqrt(gnorm)) * gnorm,
+                     step_map = step_map)
 
     # Evaluate candidate
     theta_new = theta + p
@@ -137,14 +150,15 @@ outerproduct = function(A, B, K) {
       theta_old = theta
       theta = theta_new; val = val_new; grad = res_new$grad
       ratio = actual / predicted
-      pnorm = sqrt(sum(p^2))
+      pnorm = snorm(p)
       bdiv   = if (!is.null(conv_fn))  conv_fn(theta_old, theta)  else NA_real_
       wdelta = if (!is.null(weight_fn)) {
         gam_old = weight_fn(theta_old); gam_new = weight_fn(theta)
         sqrt(mean((gam_new - gam_old)^2))
       } else NA_real_
       trace[nrow(trace) + 1, ] = list(iter, val, gnorm, delta, TRUE, bdiv, wdelta)
-      if (!is.null(conv_fn) && !is.na(bdiv) && bdiv < tol) break
+      if (!is.null(conv_fn) && !is.na(bdiv) && bdiv < tol &&
+          gnorm < tol * gnorm0) break
       if (ratio > 0.75 && pnorm > 0.8 * delta)
         delta = min(delta * 2, 1e8)
       else if (ratio < 0.25)
@@ -153,7 +167,7 @@ outerproduct = function(A, B, K) {
       # Reject step, shrink
       trace[nrow(trace) + 1, ] = list(iter, val, gnorm, delta, FALSE, NA_real_, NA_real_)
       delta = delta * 0.25
-      if (delta < 1e-15 * (1 + sqrt(sum(theta^2)))) break
+      if (delta < 1e-15 * (1 + snorm(theta))) break
     }
   }
   list(theta = theta, val = val, grad = grad, iter = iter, trace = trace)
@@ -172,29 +186,37 @@ outerproduct = function(A, B, K) {
 #' @param maxiter Max CG iterations.
 #' @param tol Residual tolerance.
 #' @return Step vector p with ||p|| <= delta.
-.steihaug_cg = function(hv, rhs, delta, precond = NULL, maxiter = 50, tol = 1e-8) {
+.steihaug_cg = function(hv, rhs, delta, precond = NULL, maxiter = 50, tol = 1e-8,
+                        step_map = NULL) {
+  # M-weighted inner product: <a,b>_M = step_map(a)' step_map(b).
+  # step_map is a linear map from theta-space to the metric space
+  # (e.g. dual_map frozen at current theta). When NULL, Euclidean.
+  Mnorm2 = if (!is.null(step_map)) {
+    function(v) sum(step_map(v)^2)
+  } else function(v) sum(v^2)
+  Mdot = if (!is.null(step_map)) {
+    function(a, b) sum(step_map(a) * step_map(b))
+  } else function(a, b) sum(a * b)
+
   p = numeric(length(rhs))
   r = rhs  # residual = rhs - H·0 = rhs
   z = if (!is.null(precond)) precond(r) else r
   d = z
   rz = sum(r * z)
-  rhs_norm = sqrt(sum(rhs^2))
 
   for (k in 1:maxiter) {
     Hd = hv(d)
     dHd = sum(d * Hd)
 
     if (dHd <= 0) {
-      # Negative curvature: go to trust-region boundary along d
-      return(.to_boundary(p, d, delta))
+      return(.to_boundary(p, d, delta, Mnorm2, Mdot))
     }
 
     alpha = rz / dHd
     p_new = p + alpha * d
 
-    if (sqrt(sum(p_new^2)) >= delta) {
-      # Step exceeds trust region: go to boundary along d
-      return(.to_boundary(p, d, delta))
+    if (sqrt(Mnorm2(p_new)) >= delta) {
+      return(.to_boundary(p, d, delta, Mnorm2, Mdot))
     }
 
     p = p_new
@@ -210,11 +232,14 @@ outerproduct = function(A, B, K) {
 }
 
 #' Move from p along direction d to the trust-region boundary ||p + t*d|| = delta.
-.to_boundary = function(p, d, delta) {
-  # Solve ||p + t*d||² = delta² for t > 0
-  pp = sum(p^2); pd = sum(p * d); dd = sum(d^2)
+.to_boundary = function(p, d, delta, Mnorm2 = NULL, Mdot = NULL) {
+  # Solve ||p + t*d||_M = delta for t > 0.
+  # Quadratic: (d'Md)t² + 2(p'Md)t + (p'Mp - delta²) = 0.
+  if (is.null(Mnorm2)) { Mnorm2 = function(v) sum(v^2); Mdot = function(a,b) sum(a*b) }
+  pp = Mnorm2(p); pd = Mdot(p, d); dd = Mnorm2(d)
   disc = pd^2 - dd * (pp - delta^2)
-  if (disc < 0) return(p)  # shouldn't happen
+  if (disc < 0) return(p)
   t = (-pd + sqrt(disc)) / dd
   p + t * d
 }
+

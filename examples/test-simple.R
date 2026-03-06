@@ -4,7 +4,7 @@
 ## One DGP (paper_cts), one kernel (smooth), one eta (1/n), two estimands.
 ## No grid sweep, no tuning selection, no CV.
 ##
-## Cluster script: runs one rep, saves raw dr_result + boot_result objects.
+## Cluster script: runs one rep, saves raw effect_estimate + bootstrapped_estimate objects.
 ## Postprocessing (coverage, summaries) happens locally.
 ##
 ## Usage:
@@ -38,13 +38,13 @@ source("R/dispersions.R")
 source("R/estimands.R")
 source("R/survival.R")
 source("R/dgp.R")
-source("R/surv_estimate.R")
+source("R/survival_estimate.R")
 
 horizon = 1
 p = 2
-kern = direct_product(matern_kernel(sigma = 2, nu = 3/2), iw = 2, levels = c(0, 1))
+kern = direct_product_kernel(matern_kernel(sigma = 2, nu = 3/2), iw = 2, levels = c(0, 1))
 lambda_disp = entropy_dispersion()
-gamma_disp_fn = target_scaled_entropy
+gamma_disp_fn = target_scaled_entropy_dispersion
 estimand_names = c("surv_prob", "rmst")
 
 make_estimand = function(name) {

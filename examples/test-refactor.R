@@ -1,4 +1,4 @@
-## Smoke test: verify S3 dispersion refactor + surv_estimate plumbing.
+## Smoke test: verify S3 dispersion refactor + survival_estimate plumbing.
 ## Tiny dataset, no bootstrap. Just checks that everything sources
 ## and produces a finite DR estimate.
 
@@ -25,10 +25,10 @@ stopifnot(abs(.dchis(d, 3) - 3) < 1e-10)         # identity
 stopifnot(isTRUE(d$base$quadratic))
 cat("   quadratic: OK\n")
 
-# --- 2. Verify composition (target_scaled_entropy) ---
-cat("2. Composition: target_scaled_entropy\n")
+# --- 2. Verify composition (target_scaled_entropy_dispersion) ---
+cat("2. Composition: target_scaled_entropy_dispersion\n")
 r = c(0.5, -0.3, 0.8)
-d = target_scaled_entropy(r)
+d = target_scaled_entropy_dispersion(r)
 test_phi = c(0, 0, 0)
 gamma = .dchis(d, test_phi)
 # gamma = r + sign(r) * exp(sign(r) * phi) = r + sign(r) * 1
@@ -40,10 +40,10 @@ cat("   dchis at phi=0: OK\n")
 stopifnot(all(abs(gamma) >= abs(r) - 1e-10))
 cat("   sign constraint: OK\n")
 
-# --- 3. Verify variance_weighted_quadratic ---
-cat("3. Composition: variance_weighted_quadratic\n")
+# --- 3. Verify variance_weighted_quadratic_dispersion ---
+cat("3. Composition: variance_weighted_quadratic_dispersion\n")
 r = c(1, -2); v = c(0.5, 0.5)
-d = variance_weighted_quadratic(r, v)
+d = variance_weighted_quadratic_dispersion(r, v)
 test_phi = c(0.1, -0.1)
 gamma = .dchis(d, test_phi)
 # psi = sign(r) * phi / v, dchis = r + sign(r) * pmax(psi, 0)
@@ -67,7 +67,7 @@ cat("5. End-to-end: survival_effect on paper_cts DGP (n=50)\n")
 set.seed(42)
 dgp = paper_cts_dgp(horizon = 1)
 dat = dgp$generate(50, p = 2)
-kern = direct_product(matern_kernel(sigma = 2, nu = 3/2), iw = 2, levels = c(0, 1))
+kern = direct_product_kernel(matern_kernel(sigma = 2, nu = 3/2), iw = 2, levels = c(0, 1))
 
 obs = list(T_obs = dat$T_obs, D = dat$D, Z = cbind(dat$A, dat$X))
 estimand = survival_probability_ate()

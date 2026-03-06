@@ -681,7 +681,7 @@ generate_binary_hain = function(n, zeta = sqrt(10)) {
 #' @param n Sample size.
 #' @param zeta Propensity scaling (default sqrt(10)).
 #' @return List with X, W, Y, pi, mu1, mu0, tau, tsm1, ate, vcate.
-generate_hain = function(n, zeta = sqrt(10)) {
+generate_continuous_hain = function(n, zeta = sqrt(10)) {
   Sigma_hain = matrix(c(2, 1, -1, 1, 1, -0.5, -1, -0.5, 1), nrow = 3)
   R_hain = cov2cor(Sigma_hain)
 
