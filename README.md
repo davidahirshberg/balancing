@@ -26,6 +26,10 @@ est <- balancing_estimate(
 )
 ```
 
+## Documentation
+
+https://davidahirshberg.github.io/balancing/
+
 ## License
 
 MIT

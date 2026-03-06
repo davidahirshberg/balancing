@@ -3,3 +3,63 @@ url: https://davidahirshberg.github.io/balancing/
 template:
   bootstrap: 5
 
+reference:
+  - title: "Estimation"
+    contents:
+      - balancing_estimate
+      - survival_effect
+      - estimate
+
+  - title: "Estimands"
+    contents:
+      - treatment_specific_mean
+      - vcate
+      - risk_ratio
+      - survival_probability_ate
+      - survival_probability_tsm
+      - rmst_ate
+      - rmst_tsm
+
+  - title: "Kernels"
+    contents:
+      - matern_kernel
+      - gaussian_kernel
+      - direct_product
+      - kernel_matrix
+
+  - title: "Dispersions"
+    contents:
+      - entropy_dispersion
+      - softplus_dispersion
+      - quadratic_dispersion
+      - signflip
+
+  - title: "Tuning"
+    contents:
+      - lepski_tuning
+      - cv_tuning
+      - oracle_tuning
+      - fixed_tuning
+      - tuning_context
+
+  - title: "Survival pipeline"
+    contents:
+      - fit_lambda
+      - fit_gamma
+      - aggregate_dr
+      - mesh_project
+      - discrete_grid
+      - continuous_grid
+
+  - title: "Bootstrap and inference"
+    contents:
+      - bootstrap
+      - ci_t
+      - ci_pct
+      - n_bad
+
+  - title: "Internals"
+    desc: >
+      Internal functions not part of the public API.
+    contents:
+      - matches(".")
