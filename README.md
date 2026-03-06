@@ -1,5 +1,7 @@
 # balancing
 
+> **Warning:** This package is in early development. The code was largely written by an AI assistant and has not been fully reviewed or tested by the author. Use at your own risk.
+
 Kernel balancing weights via Bregman method-of-moments with pluggable dispersions, kernels, and estimands. Supports survival and single-outcome settings with adaptive regularization (Lepski) and cross-fitting.
 
 ## Installation
