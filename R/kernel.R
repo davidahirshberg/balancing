@@ -66,21 +66,71 @@ block_diag = function(blocks, n_row) {
 }
 
 
-#' ## Kernel Constructors
+# ---- Kernel Constructors ----
+
+#' Matern kernel
 #'
-#' ### `matern_kernel`
+#' Construct an isotropic or anisotropic Matern kernel.
 #'
-#' **Paper**: the Matern kernel with smoothness \eqn{\nu} and
-#' length scale \eqn{\sigma}:
+#' @param sigma Positive scalar giving the isotropic length scale.
+#'   Larger values produce smoother interpolation (wider effective
+#'   neighborhoods).  Ignored when \code{scale} is provided.
+#' @param nu Smoothness parameter.  The RKHS of a Matern-\eqn{\nu}
+#'   kernel is the Sobolev space \eqn{H^{\nu + d/2}}, so larger
+#'   \eqn{\nu} yields smoother functions.
+#'   Common choices: \eqn{\nu = 1/2} (exponential / Laplace kernel),
+#'   \eqn{\nu = 3/2} (default, once differentiable),
+#'   \eqn{\nu = 5/2} (twice differentiable).
+#' @param scale Optional numeric vector of per-dimension length scales
+#'   for anisotropic kernels.
+#'   When supplied, each coordinate \eqn{z_j} is rescaled by
+#'   \eqn{1 / \mathrm{scale}_j} before computing distances, allowing
+#'   different smoothing in each covariate direction.  If \code{NULL}
+#'   (the default), the kernel is isotropic with length scale
+#'   \code{sigma}.
+#' @param null_basis A function \code{f(Z)} returning an
+#'   \eqn{n \times d_0} matrix whose columns span the null space
+#'   \eqn{\ker(\rho)} of the RKHS seminorm.  The solver penalizes
+#'   the RKHS-norm component but leaves the null-space component
+#'   unpenalized.
+#'
+#'   Default: constant functions (\eqn{B = \mathbf{1}}, an intercept).
+#'   For a strict norm penalty with no null space, pass
+#'   \code{function(Z) matrix(nrow = nrow(Z), ncol = 0)}.
+#'
+#' @details
+#' The Matern kernel with smoothness \eqn{\nu} and length scale
+#' \eqn{\sigma} is
 #' \deqn{k(z, z') = \frac{2^{1-\nu}}{\Gamma(\nu)}
 #'   \Bigl(\frac{\sqrt{2\nu}}{\sigma}\|z-z'\|\Bigr)^\nu
 #'   K_\nu\!\Bigl(\frac{\sqrt{2\nu}}{\sigma}\|z-z'\|\Bigr)}
-#' Special cases: \eqn{\nu = 1/2} (exponential), \eqn{\nu = 3/2}
-#' (default), \eqn{\nu = 5/2}.
+#' where \eqn{K_\nu} is the modified Bessel function of the second
+#' kind.
 #'
-#' The `null_basis` attribute defines \eqn{\ker(\rho)}. Default:
-#' constant functions (intercept, \eqn{B = \mathbf{1}}). For norm
-#' penalty (no null space): `function(Z) matrix(nrow=nrow(Z), ncol=0)`.
+#' Closed-form special cases avoid the Bessel evaluation:
+#' \itemize{
+#'   \item \eqn{\nu = 1/2}: \eqn{k = \exp(-r)}, the exponential kernel.
+#'   \item \eqn{\nu = 3/2}: \eqn{k = (1 + r)\exp(-r)}.
+#'   \item \eqn{\nu = 5/2}: \eqn{k = (1 + r + r^2/3)\exp(-r)}.
+#' }
+#' Here \eqn{r = \sqrt{2\nu}\,\|z - z'\| / \sigma}.
+#'
+#' @return A function of class \code{"kernel"} with attributes
+#'   \code{type}, \code{sigma}, \code{nu}, \code{scale}, and
+#'   \code{null_basis}.  Pass to \code{\link{kernel_matrix}} to
+#'   compute the Gram matrix.
+#'
+#' @examples
+#' # Default: Matern-3/2, isotropic, unit length scale
+#' k <- matern_kernel()
+#'
+#' # Smoother kernel with larger length scale
+#' k <- matern_kernel(sigma = 2, nu = 5/2)
+#'
+#' # Anisotropic: different length scales per covariate
+#' k <- matern_kernel(nu = 3/2, scale = c(1, 0.5, 2))
+#'
+#' @export
 matern_kernel = function(sigma = 1, nu = 3/2, scale = NULL,
                          null_basis = function(Z) matrix(1, nrow(atleast_2d(Z)), 1)) {
   pointwise = function(z, zp) {
@@ -100,19 +150,53 @@ matern_kernel = function(sigma = 1, nu = 3/2, scale = NULL,
 }
 
 
-#' ### `direct_product_kernel`
+#' Direct product kernel
 #'
-#' **Paper**: the product kernel
-#' \deqn{k\bigl((w,x),(w',x')\bigr) = k_X(x,x')\,\mathbf{1}\{w=w'\}}
-#' decomposes the RKHS into one copy of \eqn{\mathcal{H}_{k_X}} per
-#' treatment arm. The null space of the product seminorm has one
-#' copy of \eqn{\ker(\rho_X)} per level: \eqn{B = \mathrm{blkdiag}(B_X,
-#' \ldots, B_X)}.
+#' Construct a product kernel that applies a base kernel within
+#' treatment arms and zeros across arms.
 #'
-#' **Code**: `iw` gives the column indices in \eqn{Z} that hold the
-#' grouping variable(s). `levels` declares the set of
-#' treatment values (data must only contain declared levels).
-#' The kernel matrix is computed as \eqn{K_X \odot \mathbf{1}\{W_i = W_j\}}.
+#' @param k_x A kernel object (e.g. from \code{\link{matern_kernel}})
+#'   for the covariate dimensions.  This kernel is applied to the
+#'   non-grouping columns of the data.
+#' @param iw Integer vector of column indices in the data matrix
+#'   \eqn{Z} that hold the grouping (treatment) variable(s).
+#'   Default is \code{1} (first column).
+#' @param levels Character or numeric vector of declared treatment
+#'   levels.  All values in the grouping columns must belong to this
+#'   set; the constructor throws an error if the data contains
+#'   undeclared levels.
+#'
+#'   When the grouping variable spans multiple columns (i.e.
+#'   \code{length(iw) > 1}), pass a list of per-column level vectors;
+#'   the Cartesian product is formed internally.
+#'
+#' @details
+#' The product kernel is
+#' \deqn{k\bigl((w,x),(w',x')\bigr) = k_X(x,x')\,\mathbf{1}\{w = w'\}}
+#' where \eqn{w} is the treatment indicator and \eqn{x} are
+#' covariates.  This decomposes the RKHS into one independent copy of
+#' \eqn{\mathcal{H}_{k_X}} per treatment arm, so the balancing
+#' function is fit separately within each arm while sharing the
+#' kernel hyperparameters.
+#'
+#' The null space of the product seminorm is block-diagonal:
+#' \eqn{B = \mathrm{blkdiag}(B_X, \ldots, B_X)}, one copy of
+#' \eqn{\ker(\rho_X)} per level.
+#'
+#' The kernel matrix is computed as \eqn{K_X \odot M} where
+#' \eqn{M_{ij} = \mathbf{1}\{W_i = W_j\}} is the treatment-match
+#' mask.
+#'
+#' @return An object of class \code{c("product_kernel", "kernel")}
+#'   with attributes \code{null_basis}.  Pass to
+#'   \code{\link{kernel_matrix}} to compute the Gram matrix.
+#'
+#' @examples
+#' # Two-arm trial: treatment in column 1, two covariates in columns 2-3
+#' k_x <- matern_kernel(nu = 3/2)
+#' k <- direct_product_kernel(k_x, iw = 1, levels = c(0, 1))
+#'
+#' @export
 direct_product_kernel = function(k_x, iw = 1, levels) {
   # Expand list of per-column levels to pasted Cartesian product
   if (is.list(levels)) {
@@ -157,12 +241,37 @@ null_basis = function(Z, kern) {
 }
 
 
-#' ## Kernel Matrix Computation
+#' Compute a kernel (Gram) matrix
 #'
-#' `kernel_matrix(A, B, kern)` computes \eqn{K_{ij} = k(A_i, B_j)}.
-#' S3 dispatch on `kern`:
-#' - `product_kernel`: \eqn{K_X \odot \mathrm{mask}}, mask from grouping cols
-#' - `kernel` (isotropic): fast squared-distance + `.kernel_from_D2`
+#' Evaluate the kernel function at all pairs of rows from two data
+#' matrices, returning the \eqn{n_A \times n_B} Gram matrix.
+#'
+#' @param A Numeric matrix (or vector coerced to single-column matrix)
+#'   of evaluation points, one row per observation.
+#' @param B Numeric matrix of evaluation points with the same number
+#'   of columns as \code{A}.
+#' @param kern A kernel object, typically from
+#'   \code{\link{matern_kernel}} or
+#'   \code{\link{direct_product_kernel}}.  S3 dispatch selects the
+#'   appropriate method:
+#'   \itemize{
+#'     \item \code{product_kernel}: computes
+#'       \eqn{K_X \odot \mathbf{1}\{W_i = W_j\}}, applying the base
+#'       kernel to the non-grouping columns and masking cross-arm
+#'       entries.
+#'     \item \code{kernel} (isotropic Matern or Gaussian): uses a
+#'       fast squared-distance computation.
+#'   }
+#'
+#' @return An \eqn{n_A \times n_B} numeric matrix with
+#'   \eqn{K_{ij} = k(A_i, B_j)}.
+#'
+#' @examples
+#' k <- matern_kernel(nu = 3/2)
+#' X <- matrix(rnorm(20), 10, 2)
+#' K <- kernel_matrix(X, X, k)
+#'
+#' @export
 kernel_matrix = function(A, B, kern) UseMethod("kernel_matrix", kern)
 
 kernel_matrix.product_kernel = function(A, B, kern) {

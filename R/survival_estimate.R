@@ -177,8 +177,53 @@ build_gamma_correction = function(predict_haz, estimand_obj, eval_Z,
   }
 }
 
-#' ## `mesh_project`
+#' Discretize Time Axis and Build Crossfit Folds
 #'
+#' Discretizes the time axis into a training mesh, constructs at-risk pair
+#' stacks for each crossfit fold, and pre-computes kernel matrices and
+#' projected targets for both the hazard and weight models.
+#'
+#' @param observations A list with components \code{T_obs} (observed times),
+#'   \code{D} (event indicators, 1 = event, 0 = censored), and \code{Z}
+#'   (covariate matrix with columns for treatment and baseline covariates).
+#' @param horizon Numeric scalar; the time horizon \eqn{\bar t} for the
+#'   analysis. Observations beyond this are treated as censored at \eqn{\bar t}.
+#' @param M_train Integer; number of bins for the training mesh on
+#'   \eqn{[0, \bar t]}.
+#' @param n_folds Integer; number of crossfit folds. With \code{n_folds = 2},
+#'   each fold trains on one half and evaluates on the other. With
+#'   \code{n_folds >= 3}, a three-way split is used: one fold for
+#'   \eqn{\hat\lambda}, one for \eqn{\hat\gamma}, one for evaluation.
+#' @param kern A kernel object (e.g., from \code{\link{matern_kernel}} or
+#'   \code{\link{direct_product_kernel}}) used for the hazard model.
+#' @param kern_gamma A kernel object for the weight model. Defaults to
+#'   \code{kern}.
+#' @param discrete Logical; if \code{TRUE}, use a discrete-time grid
+#'   (hazard probabilities at mesh atoms). If \code{FALSE}, use a continuous
+#'   piecewise-constant grid.
+#'
+#' @return A list of length \code{n_folds}, each element a list containing:
+#'   \describe{
+#'     \item{lambda_idx, gamma_idx, eval_idx}{Integer vectors of subject
+#'       indices assigned to the hazard training, weight training, and
+#'       evaluation folds.}
+#'     \item{stacked_lambda, stacked_gamma}{At-risk pair stacks (from
+#'       \code{at_risk_pairs}) for hazard and weight training.}
+#'     \item{mesh}{Numeric vector of mesh midpoints \eqn{u_1, \ldots, u_M}.}
+#'     \item{du_bin}{Bin width of the training mesh.}
+#'     \item{K_lambda, K_gamma}{Kernel matrices on the stacked data.}
+#'     \item{tgt_lambda}{Projected target list with components \code{target}
+#'       and \code{target_null} for the hazard model.}
+#'     \item{train_grid}{A grid object (discrete or continuous) on the
+#'       training mesh.}
+#'     \item{eval_Z}{Covariate matrix for the evaluation fold.}
+#'     \item{T_obs_eval, D_eval}{Observed times and event indicators for
+#'       the evaluation fold.}
+#'     \item{n_eval}{Number of subjects in the evaluation fold.}
+#'     \item{horizon}{The time horizon (passed through).}
+#'   }
+#'
+#' @details
 #' **Paper**: discretize the time axis \eqn{[0, \bar t]} into \eqn{M}
 #' bins with mesh points \eqn{u_1, \ldots, u_M}. For each subject
 #' \eqn{i} with observed time \eqn{\tilde T_i}, the at-risk set is
@@ -193,6 +238,16 @@ build_gamma_correction = function(predict_haz, estimand_obj, eval_Z,
 #' - `K_lambda`, `K_gamma`: kernel matrices on stacked data
 #' - `tgt_lambda`: projected target \eqn{c_\lambda = K_{\mathcal{D}}\,Y}
 #' - `eval_Z`, `T_obs_eval`, `D_eval`: evaluation fold data
+#'
+#' @examples
+#' \dontrun{
+#' kern <- matern_kernel(c(1, 1, 1), nu = 2.5)
+#' obs <- list(T_obs = rexp(100), D = rbinom(100, 1, 0.7),
+#'             Z = cbind(A = rbinom(100, 1, 0.5), X = rnorm(100)))
+#' mps <- mesh_project(obs, horizon = 2, M_train = 10, n_folds = 2, kern = kern)
+#' }
+#'
+#' @export
 mesh_project = function(observations, horizon, M_train, n_folds, kern,
                         kern_gamma = kern, discrete = FALSE) {
   T_obs = observations$T_obs; D = observations$D; Z = atleast_2d(observations$Z)
@@ -249,8 +304,36 @@ mesh_project = function(observations, horizon, M_train, n_folds, kern,
 # Per-fold primitives
 # ============================================================
 
-#' ## `fit_lambda`
+#' Fit Hazard Model on a Crossfit Fold
 #'
+#' Solves the kernel Bregman divergence problem for the hazard model
+#' \eqn{\hat\lambda} on the stacked at-risk pairs from one crossfit fold.
+#'
+#' @param mp A single fold element from the list returned by
+#'   \code{\link{mesh_project}}.
+#' @param kern A kernel object (e.g., from \code{\link{matern_kernel}})
+#'   used for the hazard model.
+#' @param eta Numeric scalar; regularization parameter \eqn{\eta_\lambda}
+#'   for the kernel ridge penalty.
+#' @param lambda_disp A dispersion object (e.g., from
+#'   \code{\link{entropy_dispersion}}) specifying the Bregman divergence
+#'   \eqn{\chi^*_\lambda} for the hazard model.
+#' @param warm Optional warm-start: a list with components \code{alpha} and
+#'   \code{beta} from a previous \code{kernel_bregman} fit.
+#' @param K_chol Optional pre-computed Cholesky factor of the kernel matrix
+#'   \eqn{K_{\mathcal{D}}}. If \code{NULL}, computed internally.
+#' @param maxiter Integer; maximum number of Newton iterations for the
+#'   solver. Default 100.
+#' @param log A logger object for diagnostic output. Default
+#'   \code{null_logger} (silent).
+#'
+#' @return A \code{kernel_bregman} object containing the fitted dual
+#'   parameters \eqn{\alpha}, \eqn{\beta}, kernel matrix, Cholesky factor,
+#'   and dispersion. Use \code{.phi()} to evaluate the fitted linear
+#'   predictor and \code{.dchis()} to map to hazard predictions
+#'   \eqn{\hat\lambda}.
+#'
+#' @details
 #' **Paper** (eq:hazard-alpha): fit the hazard model on stacked
 #' at-risk pairs \eqn{\mathcal{D}}:
 #' \deqn{\min_\alpha \frac{1}{|\mathcal{D}|}\sum_{(i,m) \in \mathcal{D}}
@@ -261,6 +344,15 @@ mesh_project = function(observations, horizon, M_train, n_folds, kern,
 #'
 #' **Code**: wraps `kernel_bregman` with `target` \eqn{= K_{\mathcal{D}}\,Y}
 #' (precomputed in `mesh_project`).
+#'
+#' @examples
+#' \dontrun{
+#' mps <- mesh_project(obs, horizon = 2, M_train = 10, n_folds = 2, kern = kern)
+#' lam_fit <- fit_lambda(mps[[1]], kern, eta = 0.01,
+#'                       lambda_disp = entropy_dispersion())
+#' }
+#'
+#' @export
 fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL,
                       K_chol = NULL, maxiter = 100, log = null_logger) {
   kernel_bregman(mp$stacked_lambda$Z_pool, kern,
@@ -273,8 +365,67 @@ fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL,
                  log = log)
 }
 
-#' ## `fit_gamma`
+#' Fit Weight Model on a Crossfit Fold
 #'
+#' Solves the kernel Bregman divergence problem for the balancing weight
+#' model \eqn{\hat\gamma} on the stacked at-risk pairs from one crossfit
+#' fold, given a fitted hazard model.
+#'
+#' @param mp A single fold element from the list returned by
+#'   \code{\link{mesh_project}}.
+#' @param lambda_fit A \code{kernel_bregman} object from
+#'   \code{\link{fit_lambda}} (or \code{onestep_bregman} during bootstrap).
+#' @param kern A kernel object for the weight model.
+#' @param eta Numeric scalar; regularization parameter \eqn{\eta_\gamma}
+#'   for the kernel ridge penalty.
+#' @param estimand A \code{survival_estimand} object (e.g., from
+#'   \code{\link{survival_probability_ate}}) providing the estimand-specific
+#'   derivatives \code{dpsi_grid}, \code{dot_psi_Z}, \code{direct}, etc.
+#' @param gamma_disp_fn Function mapping the per-observation target offset
+#'   to a dispersion object for the weight model. Default:
+#'   \code{target_scaled_entropy_dispersion}.
+#' @param gamma_base Base dispersion list for the weight model (default:
+#'   \code{entropy_base}).
+#' @param warm Optional warm-start: a \code{kernel_bregman} object from a
+#'   previous fit. Used during bootstrap to initialize the solver.
+#' @param gamma_target Optional pre-computed projected target vector
+#'   \eqn{c_\gamma}. If \code{NULL}, computed internally from the estimand
+#'   derivatives and hazard predictions.
+#' @param gamma_target_null Optional pre-computed null-space target. Paired
+#'   with \code{gamma_target}.
+#' @param w Optional numeric vector of observation weights (length =
+#'   number of stacked gamma pairs). Used in bootstrap for Poisson
+#'   multiplier reweighting.
+#' @param w_eval Optional numeric vector of evaluation-fold weights (length
+#'   = \code{mp$n_eval}). Used in bootstrap to reweight the embedding
+#'   measure.
+#' @param K_cross Optional pre-computed cross-kernel matrix between the
+#'   gamma basis and the embedding measure support. Avoids recomputation
+#'   during bootstrap.
+#' @param dchis_gamma Optional pre-computed closure
+#'   \code{function(Z, phi)} for evaluating the gamma correction
+#'   \eqn{\dot\chi^*_Z(\phi)}. If \code{NULL}, built internally via
+#'   \code{build_gamma_correction}.
+#' @param K_chol_gamma Optional pre-computed Cholesky factor of the gamma
+#'   kernel matrix.
+#' @param maxiter Integer; maximum Newton iterations. Default 100;
+#'   set to 1 for one-step bootstrap refits.
+#' @param log A logger object for diagnostic output.
+#'
+#' @return A list with components:
+#'   \describe{
+#'     \item{gamma_fit}{A \code{kernel_bregman} object for the fitted
+#'       weight model.}
+#'     \item{dchis_gamma}{The gamma correction closure
+#'       \code{function(Z, phi)} (reusable across bootstrap replicates).}
+#'     \item{predict_haz}{Closure \code{function(k, Z_ev)} returning
+#'       hazard predictions \eqn{\hat\lambda_{u_k}(Z)} on the training
+#'       mesh.}
+#'     \item{gamma_target, gamma_target_null}{The projected target vectors
+#'       used in the solve.}
+#'   }
+#'
+#' @details
 #' **Paper** (eq:weight-beta): fit the weight model on stacked
 #' at-risk pairs \eqn{\mathcal{E}}:
 #' \deqn{\min_\beta \frac{1}{|\mathcal{E}|}\sum_{(i,m) \in \mathcal{E}}
@@ -289,6 +440,14 @@ fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL,
 #' `project_target`, then solves with `kernel_bregman`.
 #' The `gamma_disp_fn` maps the target \eqn{r} to a Z-dependent
 #' dispersion (default: target-scaled entropy).
+#'
+#' @examples
+#' \dontrun{
+#' gam_res <- fit_gamma(mps[[1]], lambda_fits[[1]], kern, eta = 0.1,
+#'                      estimand = survival_probability_ate(t = 2))
+#' }
+#'
+#' @export
 fit_gamma = function(mp, lambda_fit, kern, eta, estimand,
                      gamma_disp_fn = target_scaled_entropy_dispersion,
                      gamma_base = entropy_base,
@@ -355,14 +514,56 @@ fit_gamma = function(mp, lambda_fit, kern, eta, estimand,
        gamma_target = gamma_target, gamma_target_null = gamma_target_null)
 }
 
-#' ## `estimate`
+#' Compute Per-Subject Doubly-Robust Terms
 #'
+#' Evaluates the plug-in (direct) and weighted-residual (correction) terms
+#' of the doubly-robust estimator for each subject in the evaluation fold.
+#'
+#' @param mp A single fold element from the list returned by
+#'   \code{\link{mesh_project}}.
+#' @param lambda_fit A \code{kernel_bregman} object from
+#'   \code{\link{fit_lambda}}.
+#' @param gamma_result A list from \code{\link{fit_gamma}} containing
+#'   components \code{gamma_fit} (the fitted weight model) and
+#'   \code{dchis_gamma} (the gamma correction closure).
+#' @param estimand A \code{survival_estimand} object providing the
+#'   \code{direct} method for plug-in evaluation.
+#' @param grid A grid object (from \code{\link{discrete_grid}} or
+#'   \code{\link{continuous_grid}}) for evaluating the plug-in estimand
+#'   and compensator integral.
+#'
+#' @return A list with components:
+#'   \describe{
+#'     \item{direct}{Numeric vector of length \code{mp$n_eval}; the
+#'       plug-in estimate \eqn{\psi_{Z_i}(\hat\lambda)} for each
+#'       evaluation subject.}
+#'     \item{correction}{Numeric vector of length \code{mp$n_eval}; the
+#'       DR correction (Dirac minus compensator) for each subject.}
+#'     \item{terms}{Numeric vector \eqn{\hat V_i = \text{direct}_i +
+#'       \text{correction}_i}, the per-subject influence function values
+#'       ready for aggregation by \code{\link{pool_folds}}.}
+#'     \item{noise_var}{Numeric vector of per-subject noise variance
+#'       estimates from the compensator integral.}
+#'     \item{events}{Integer vector of indices (within the evaluation fold)
+#'       where an event occurred before the horizon.}
+#'   }
+#'
+#' @details
 #' **Paper**: compute the per-subject influence function terms
 #' \deqn{\hat V_i = \psi_{Z_i}(\hat\lambda)
 #'   + E_U\,\hat\gamma_i(U)\{Y_i^U - \hat\lambda_U(Z_i)\}}
 #' The first term is `direct` (plug-in at \eqn{\hat\lambda}); the
 #' second is `correction` (Dirac minus compensator).
 #' Returns `terms` \eqn{= \hat V_i} for aggregation.
+#'
+#' @examples
+#' \dontrun{
+#' est <- estimate(mps[[1]], lambda_fits[[1]], gamma_results[[1]],
+#'                 estimand, grid)
+#' mean(est$terms)  # fold-level point estimate
+#' }
+#'
+#' @export
 estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
   lambda_disp = lambda_fit$dispersion
   lambda_fit_ = .bind(lambda_fit, mp$eval_Z)
@@ -384,8 +585,59 @@ estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
 # Aggregation
 # ============================================================
 
-#' ## `pool_folds`
+#' Pool Crossfit Fold Estimates
 #'
+#' Aggregates per-fold doubly-robust terms \eqn{\hat V_i} across all
+#' crossfit folds into a single point estimate and standard error.
+#'
+#' @param mps List of fold objects from \code{\link{mesh_project}}.
+#' @param lambda_fits List of \code{kernel_bregman} objects from
+#'   \code{\link{fit_lambda}}, one per fold.
+#' @param gamma_results List of gamma result lists from
+#'   \code{\link{fit_gamma}}, one per fold.
+#' @param fold_estimates List of estimate lists from
+#'   \code{\link{estimate}}, one per fold. Each must contain a
+#'   \code{terms} vector.
+#' @param kern Kernel object used for the hazard model (stored for
+#'   bootstrap reuse).
+#' @param eta_gam Numeric scalar; gamma regularization parameter (stored
+#'   for bootstrap reuse).
+#' @param lambda_disp Dispersion object for the hazard model (stored for
+#'   bootstrap reuse).
+#' @param estimand A \code{survival_estimand} object (stored for bootstrap
+#'   reuse).
+#' @param horizon Numeric scalar; time horizon (stored for bootstrap
+#'   reuse).
+#' @param grid Grid object used for evaluation (stored for bootstrap
+#'   reuse).
+#' @param kern_gamma Kernel object for the weight model. Defaults to
+#'   \code{kern}.
+#' @param gamma_disp_fn Gamma dispersion constructor (stored for
+#'   bootstrap reuse). Default: \code{target_scaled_entropy_dispersion}.
+#' @param gamma_base Base dispersion list for the weight model (stored
+#'   for bootstrap reuse). Default: \code{entropy_base}.
+#'
+#' @return An \code{effect_estimate} S3 object (a list) with components:
+#'   \describe{
+#'     \item{est}{Numeric scalar; the pooled point estimate
+#'       \eqn{\hat\psi = \bar V}.}
+#'     \item{se}{Numeric scalar; standard error
+#'       \eqn{\mathrm{sd}(\hat V) / \sqrt{n}}.}
+#'     \item{se_amle}{Numeric scalar; AMLE standard error
+#'       \eqn{\sqrt{(\mathrm{Var}(\text{direct}) +
+#'       \overline{\text{noise\_var}}) / n}}.}
+#'     \item{terms}{Numeric vector of length \eqn{n}; per-subject
+#'       \eqn{\hat V_i} values indexed by original subject order.}
+#'     \item{direct, noise_var}{Per-subject plug-in estimates and noise
+#'       variances.}
+#'     \item{n}{Total number of evaluation subjects.}
+#'     \item{mps, lambda_fits, gamma_results, fold_estimates}{Stored
+#'       inputs for bootstrap reuse.}
+#'   }
+#'   The object carries all fitted components needed by
+#'   \code{\link{bootstrap.effect_estimate}}.
+#'
+#' @details
 #' **Paper** (eq:crossfit): pool crossfit folds:
 #' \deqn{\hat\psi = \frac{1}{n}\sum_i \hat V_i, \quad
 #'   \hat\sigma^2 = \frac{1}{n}\sum_i \hat V_i^2}
@@ -395,6 +647,19 @@ estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
 #' \mathrm{sd}(V)/\sqrt{n}}, and `se_amle` \eqn{= \sqrt{(\mathrm{Var}(
 #' \text{direct}) + \bar{\text{noise\_var}})/n}} (AMLE variance
 #' estimate using plug-in variance + noise variance separately).
+#'
+#' @examples
+#' \dontrun{
+#' # Typically called by survival_effect(); manual usage:
+#' result <- pool_folds(mps, lambda_fits, gamma_results, fold_estimates,
+#'                      kern = kern, eta_gam = 0.1,
+#'                      lambda_disp = entropy_dispersion(),
+#'                      estimand = estimand, horizon = 2, grid = grid)
+#' result$est   # point estimate
+#' result$se    # standard error
+#' }
+#'
+#' @export
 pool_folds = function(mps, lambda_fits, gamma_results, fold_estimates,
                         kern, eta_gam, lambda_disp, estimand,
                         horizon, grid,
@@ -434,8 +699,56 @@ pool_folds = function(mps, lambda_fits, gamma_results, fold_estimates,
 # Convenience wrapper
 # ============================================================
 
-#' ## `survival_effect`
+#' Survival Causal Effect Pipeline
 #'
+#' Convenience wrapper that runs the full doubly-robust survival estimation
+#' pipeline: \code{\link{mesh_project}} \eqn{\to} \code{\link{fit_lambda}}
+#' \eqn{\to} \code{\link{fit_gamma}} \eqn{\to} \code{\link{estimate}}
+#' \eqn{\to} \code{\link{pool_folds}}.
+#'
+#' @param observations A list with components \code{T_obs} (observed times),
+#'   \code{D} (event indicators), and \code{Z} (covariate matrix).
+#' @param kern A kernel object for the hazard model.
+#' @param estimand A \code{survival_estimand} object (e.g., from
+#'   \code{\link{survival_probability_ate}}, \code{\link{rmst_ate}}).
+#' @param lambda_disp A dispersion object for the hazard model (e.g.,
+#'   \code{\link{entropy_dispersion}()}).
+#' @param eta_lam Numeric scalar; regularization parameter for the hazard
+#'   model \eqn{\hat\lambda}.
+#' @param eta_gam Numeric scalar; regularization parameter for the weight
+#'   model \eqn{\hat\gamma}.
+#' @param horizon Numeric scalar; the time horizon \eqn{\bar t}.
+#' @param M_train Integer; number of time bins for the training mesh.
+#'   Default 15.
+#' @param n_folds Integer; number of crossfit folds. Default 2.
+#' @param Q_comp Integer; number of quadrature points for the continuous
+#'   evaluation grid (must be even). Default 50. Ignored when
+#'   \code{discrete = TRUE}.
+#' @param discrete Logical; if \code{TRUE}, use discrete-time hazards.
+#'   Default \code{FALSE}.
+#' @param log A logger object for diagnostic output. Default
+#'   \code{null_logger}.
+#' @param gamma_disp_fn Gamma dispersion constructor. Default:
+#'   \code{target_scaled_entropy_dispersion}.
+#' @param gamma_base Base dispersion list for the weight model. Default:
+#'   \code{entropy_base}.
+#' @param kern_gamma Kernel object for the weight model. Defaults to
+#'   \code{kern}.
+#' @param mps Optional pre-computed mesh projections (from
+#'   \code{\link{mesh_project}}). If provided, \code{observations},
+#'   \code{M_train}, \code{n_folds}, and \code{discrete} are not used for
+#'   mesh construction.
+#' @param lambda_fits Optional pre-computed list of \code{kernel_bregman}
+#'   hazard fits (from \code{\link{fit_lambda}}). Useful for sweeping over
+#'   \code{eta_gam} with a fixed hazard model.
+#' @param gamma_results Optional pre-computed list of gamma results (from
+#'   \code{\link{fit_gamma}}).
+#'
+#' @return An \code{effect_estimate} S3 object; see \code{\link{pool_folds}}
+#'   for details. Key components: \code{est} (point estimate), \code{se}
+#'   (standard error), \code{terms} (per-subject influence values).
+#'
+#' @details
 #' Convenience wrapper: runs the full pipeline
 #' `mesh_project` \eqn{\to} `fit_lambda` \eqn{\to} `fit_gamma` \eqn{\to}
 #' `estimate` \eqn{\to} `pool_folds`.
@@ -443,6 +756,21 @@ pool_folds = function(mps, lambda_fits, gamma_results, fold_estimates,
 #' Accepts pre-computed intermediate results (`mps`,
 #' `lambda_fits`, `gamma_results`) to allow reuse across
 #' regularization grid sweeps.
+#'
+#' @examples
+#' \dontrun{
+#' kern <- matern_kernel(c(1, 1, 1), nu = 2.5)
+#' estimand <- survival_probability_ate(t = 2)
+#' obs <- list(T_obs = rexp(200), D = rbinom(200, 1, 0.7),
+#'             Z = cbind(A = rbinom(200, 1, 0.5), X = rnorm(200)))
+#' result <- survival_effect(obs, kern, estimand,
+#'                           lambda_disp = entropy_dispersion(),
+#'                           eta_lam = 0.01, eta_gam = 0.1, horizon = 2)
+#' result$est   # point estimate of ATE
+#' result$se    # standard error
+#' }
+#'
+#' @export
 survival_effect = function(observations, kern, estimand, lambda_disp,
                            eta_lam, eta_gam, horizon,
                            M_train = 15, n_folds = 2, Q_comp = 50,
@@ -479,10 +807,45 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
                gamma_disp_fn = gamma_disp_fn, gamma_base = gamma_base)
 }
 
-#' ## Bootstrap
+#' Poisson Multiplier Bootstrap for Survival DR Estimator
 #'
-#' ### `bootstrap.effect_estimate`
+#' Generic function dispatching to the \code{effect_estimate} method.
 #'
+#' @param obj An \code{effect_estimate} object from
+#'   \code{\link{survival_effect}} or \code{\link{pool_folds}}.
+#' @param ... Additional arguments passed to methods.
+#'
+#' @return See \code{bootstrap.effect_estimate}.
+#'
+#' @export
+bootstrap = function(obj, ...) UseMethod("bootstrap")
+
+#' @describeIn bootstrap Poisson multiplier bootstrap for survival DR
+#'   estimates.
+#'
+#' Performs a Poisson multiplier bootstrap with one-step Newton refits
+#' of both the hazard and weight models.
+#'
+#' @param obj An \code{effect_estimate} object from
+#'   \code{\link{survival_effect}} or \code{\link{pool_folds}}.
+#' @param n_reps Integer; number of bootstrap replicates.
+#' @param log A logger object for diagnostic output. Default
+#'   \code{null_logger}.
+#' @param ... Additional arguments (unused).
+#'
+#' @return A \code{bootstrapped_estimate} S3 object with components:
+#'   \describe{
+#'     \item{boot_ates}{Numeric vector of length \code{n_reps}; bootstrap
+#'       replicate estimates \eqn{\hat\psi^{*(b)}}.}
+#'     \item{boot_ses}{Numeric vector of length \code{n_reps}; per-replicate
+#'       standard errors (for bootstrap-t).}
+#'     \item{est}{The original point estimate \eqn{\hat\psi}.}
+#'     \item{se_amle}{The original AMLE standard error.}
+#'   }
+#'   Pass to \code{\link{bootstrap_t_interval}} or
+#'   \code{\link{percentile_bootstrap_interval}} for confidence intervals.
+#'
+#' @details
 #' **Paper** (spinoff3, sec:bootstrap): Poisson multiplier
 #' bootstrap. For each replicate \eqn{b}:
 #'
@@ -500,8 +863,18 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
 #' for target projection (avoids recomputing per replicate).
 #' Lambda refit uses `onestep_bregman`; gamma refit uses
 #' `fit_gamma` with `maxiter = 1` (warm-started from original).
-bootstrap = function(obj, ...) UseMethod("bootstrap")
-
+#'
+#' @examples
+#' \dontrun{
+#' result <- survival_effect(obs, kern, estimand,
+#'                           lambda_disp = entropy_dispersion(),
+#'                           eta_lam = 0.01, eta_gam = 0.1, horizon = 2)
+#' boot <- bootstrap(result, n_reps = 200)
+#' bootstrap_t_interval(boot)            # bootstrap-t CI
+#' percentile_bootstrap_interval(boot)   # percentile CI
+#' }
+#'
+#' @export
 bootstrap.effect_estimate = function(obj, n_reps, log = null_logger, ...) {
   n = obj$n
   kern = obj$kern; lambda_disp = obj$lambda_disp
@@ -603,12 +976,42 @@ bootstrap.effect_estimate = function(obj, n_reps, log = null_logger, ...) {
 
 bootstrap_se = function(obj) sd(obj$boot_ates, na.rm = TRUE)
 
-#' Bootstrap confidence interval (t-method).
-#' @param obj A `bootstrapped_estimate` object.
-#' @param level Confidence level (default 0.95).
-#' @param ... Additional arguments (unused).
-#' @return Length-2 vector (lower, upper).
+#' Bootstrap-t Confidence Interval
+#'
+#' Constructs a confidence interval using the bootstrap-t (studentized)
+#' method. The interval inverts the bootstrap distribution of
+#' \eqn{t^{*(b)} = (\hat\psi^{*(b)} - \hat\psi) / \hat\sigma^{*(b)}}
+#' using the AMLE standard error for the original estimate.
+#'
+#' @param obj A \code{bootstrapped_estimate} object from
+#'   \code{\link{bootstrap.effect_estimate}}.
+#' @param ... Additional arguments passed to methods.
+#'
+#' @return A named numeric vector of length 2 giving the lower and upper
+#'   confidence limits at the specified level, or \code{c(NA, NA)} if
+#'   fewer than 10 valid bootstrap replicates are available.
+#'
+#' @details
+#' Replicates with \code{NA} estimates, \code{|estimate| > 100}, or
+#' non-positive standard errors are excluded. The interval is:
+#' \deqn{[\hat\psi - q_{1-\alpha/2}\,\hat\sigma_{\mathrm{AMLE}},\;
+#'   \hat\psi - q_{\alpha/2}\,\hat\sigma_{\mathrm{AMLE}}]}
+#' where \eqn{q_p} are quantiles of the bootstrap t-statistics.
+#'
+#' @examples
+#' \dontrun{
+#' boot <- bootstrap(result, n_reps = 200)
+#' bootstrap_t_interval(boot)              # 95% CI
+#' bootstrap_t_interval(boot, level = 0.9) # 90% CI
+#' }
+#'
+#' @export
 bootstrap_t_interval = function(obj, ...) UseMethod("bootstrap_t_interval")
+
+#' @describeIn bootstrap_t_interval Method for \code{bootstrapped_estimate}
+#'   objects.
+#' @param level Numeric scalar; confidence level (default 0.95).
+#' @export
 bootstrap_t_interval.bootstrapped_estimate = function(obj, level = 0.95, ...) {
   good = !is.na(obj$boot_ates) & !is.nan(obj$boot_ates) & abs(obj$boot_ates) < 100 &
          !is.na(obj$boot_ses) & obj$boot_ses > 0
@@ -619,12 +1022,41 @@ bootstrap_t_interval.bootstrapped_estimate = function(obj, level = 0.95, ...) {
   c(obj$est - q[2] * obj$se_amle, obj$est - q[1] * obj$se_amle)
 }
 
-#' Bootstrap confidence interval (percentile method).
-#' @param obj A `bootstrapped_estimate` object.
-#' @param level Confidence level (default 0.95).
-#' @param ... Additional arguments (unused).
-#' @return Length-2 vector (lower, upper).
+#' Percentile Bootstrap Confidence Interval
+#'
+#' Constructs a confidence interval using the percentile method, taking
+#' quantiles of the bootstrap distribution of \eqn{\hat\psi^{*(b)}}
+#' directly.
+#'
+#' @param obj A \code{bootstrapped_estimate} object from
+#'   \code{\link{bootstrap.effect_estimate}}.
+#' @param ... Additional arguments passed to methods.
+#'
+#' @return A named numeric vector of length 2 giving the lower and upper
+#'   confidence limits at the specified level, or \code{c(NA, NA)} if
+#'   fewer than 10 valid bootstrap replicates are available.
+#'
+#' @details
+#' Replicates with \code{NA} estimates or \code{|estimate| > 100} are
+#' excluded. The interval is:
+#' \deqn{[q_{\alpha/2}(\hat\psi^*),\; q_{1-\alpha/2}(\hat\psi^*)]}
+#' where \eqn{q_p} denotes the \eqn{p}-th quantile of the bootstrap
+#' estimates.
+#'
+#' @examples
+#' \dontrun{
+#' boot <- bootstrap(result, n_reps = 200)
+#' percentile_bootstrap_interval(boot)              # 95% CI
+#' percentile_bootstrap_interval(boot, level = 0.9) # 90% CI
+#' }
+#'
+#' @export
 percentile_bootstrap_interval = function(obj, ...) UseMethod("percentile_bootstrap_interval")
+
+#' @describeIn percentile_bootstrap_interval Method for
+#'   \code{bootstrapped_estimate} objects.
+#' @param level Numeric scalar; confidence level (default 0.95).
+#' @export
 percentile_bootstrap_interval.bootstrapped_estimate = function(obj, level = 0.95, ...) {
   good = !is.na(obj$boot_ates) & !is.nan(obj$boot_ates) & abs(obj$boot_ates) < 100
   if (sum(good) < 10) return(c(NA, NA))

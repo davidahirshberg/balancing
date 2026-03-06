@@ -112,26 +112,138 @@ dispersion = function(base, offset = 0, sigma = 1, v = 1)
   disp$offset * phi + disp$v * disp$base$chis(psi)
 }
 
-#' ## Convenience Constructors
+#' Entropy dispersion
 #'
-#' Wrappers that build common dispersions with readable names.
-
+#' Construct a dispersion based on the entropy (exponential) conjugate.
+#'
+#' @details
+#' A dispersion encodes the penalty structure for the balancing weights
+#' problem.
+#' The solver works with the conjugate \eqn{\chi^*} (the Legendre
+#' transform of the primal penalty \eqn{\chi}), so each dispersion is
+#' defined by \eqn{\chi^*} and its derivatives.
+#'
+#' The entropy dispersion corresponds to the primal
+#' \deqn{\chi(\gamma) = \gamma \log \gamma - \gamma}
+#' on \eqn{\gamma > 0}, with conjugate
+#' \deqn{\chi^*(\phi) = \exp(\phi).}
+#' All three derivatives coincide:
+#' \eqn{\dot\chi^*(\phi) = \ddot\chi^*(\phi) = \exp(\phi)}.
+#' The primal weights are therefore
+#' \eqn{\hat\gamma = \exp(\hat\phi)}, which are strictly positive.
+#'
+#' The associated Bregman divergence is the KL divergence (Poisson
+#' deviance).  This is the default choice when weights must be
+#' nonnegative and the scale of \eqn{\gamma} is unconstrained.
+#'
+#' @return A \code{dispersion} S3 object (a list with slots \code{base},
+#'   \code{offset}, \code{sigma}, \code{v}) whose S3 methods provide
+#'   \eqn{\chi^*_Z}, \eqn{\dot\chi^*_Z}, and \eqn{\ddot\chi^*_Z} for
+#'   the dual solver.
+#'
+#' @examples
+#' d <- entropy_dispersion()
+#'
+#' @export
 entropy_dispersion   = function() dispersion(entropy_base)
-#' @rdname entropy_dispersion
+
+#' Softplus dispersion
+#'
+#' Construct a dispersion based on the softplus (logistic) conjugate.
+#'
+#' @details
+#' The softplus dispersion corresponds to the primal
+#' \deqn{\chi(\gamma) = \gamma \log \gamma + (1 - \gamma) \log(1 - \gamma)}
+#' on \eqn{\gamma \in (0, 1)}, with conjugate
+#' \deqn{\chi^*(\phi) = \log(1 + \exp(\phi)).}
+#' The first derivative is the logistic (expit) function
+#' \eqn{\dot\chi^*(\phi) = \sigma(\phi) = 1/(1 + \exp(-\phi))}, and the
+#' second derivative is
+#' \eqn{\ddot\chi^*(\phi) = \sigma(\phi)(1 - \sigma(\phi))}.
+#'
+#' The primal weights are therefore
+#' \eqn{\hat\gamma = \sigma(\hat\phi) \in (0, 1)}, making this
+#' dispersion appropriate when weights must lie in the unit interval.
+#' The associated Bregman divergence is the binary KL divergence.
+#'
+#' @return A \code{dispersion} S3 object.  See \code{\link{entropy_dispersion}}
+#'   for the structure.
+#'
+#' @examples
+#' d <- softplus_dispersion()
+#'
+#' @export
 softplus_dispersion  = function() dispersion(softplus_base)
-#' @rdname entropy_dispersion
+
+#' Quadratic dispersion
+#'
+#' Construct a dispersion based on the quadratic conjugate.
+#'
+#' @details
+#' The quadratic dispersion corresponds to the primal
+#' \deqn{\chi(\gamma) = \gamma^2 / 2}
+#' on \eqn{\gamma \in \mathbf{R}}, with conjugate
+#' \deqn{\chi^*(\phi) = \phi^2 / 2.}
+#' The first derivative is \eqn{\dot\chi^*(\phi) = \phi} and the
+#' second derivative is \eqn{\ddot\chi^*(\phi) = 1} (constant).
+#'
+#' Because the conjugate is itself quadratic, Newton's method converges
+#' in a single step.  The primal weights are
+#' \eqn{\hat\gamma = \hat\phi}, which are unconstrained in sign and
+#' magnitude.  This is the natural choice for ATE-type estimands where
+#' negative weights are acceptable.
+#'
+#' @return A \code{dispersion} S3 object.  See \code{\link{entropy_dispersion}}
+#'   for the structure.
+#'
+#' @examples
+#' d <- quadratic_dispersion()
+#'
+#' @export
 quadratic_dispersion = function() dispersion(quadratic_base)
+
 shifted_entropy_dispersion = function() dispersion(shifted_entropy_base)
 
-#' ### `sign_flip_dispersion`
+#' Sign-flipped dispersion
 #'
-#' **Paper**: for ATE weights, \eqn{\chi_Z(\gamma) = \chi(W\gamma)}
-#' with \eqn{W \in \{-1, +1\}}. Treated units (\eqn{W = +1}) get positive
-#' weights; control units (\eqn{W = -1}) get negative weights.
+#' Construct a dispersion whose primal penalty is sign-flipped by a
+#' treatment indicator, giving opposite-sign weights for treated and
+#' control units.
 #'
-#' **Code**: `dispersion(base, sigma = W)` — the sign-flip goes
-#' into the \eqn{\sigma} slot, which maps \eqn{\phi \mapsto W\phi}
-#' before applying the base \eqn{\dot\chi^*}.
+#' @param base A base dispersion record (e.g. \code{entropy_base},
+#'   \code{quadratic_base}).  Each base is a list with elements
+#'   \code{dchis}, \code{ddchis}, and \code{chis} defining
+#'   \eqn{\chi^*} and its first two derivatives on the canonical
+#'   (unshifted, unflipped) domain.
+#' @param W A numeric vector of signs, typically a treatment indicator
+#'   taking values in \eqn{\{-1, +1\}}.  Treated units (\eqn{W = +1})
+#'   receive positive weights; control units (\eqn{W = -1}) receive
+#'   negative weights.
+#'
+#' @details
+#' For ATE-type estimands the primal penalty is
+#' \deqn{\chi_Z(\gamma) = \chi(W \gamma)}
+#' where \eqn{W \in \{-1, +1\}} is the treatment indicator.
+#' The sign-flip enters the conjugate via
+#' \deqn{\dot\chi^*_Z(\phi) = W \, \dot\chi^*(W \phi),}
+#' so the dual-to-primal map
+#' \eqn{\hat\gamma = \dot\chi^*_Z(\hat\phi)} automatically produces
+#' weights with the correct sign for each arm.
+#'
+#' Internally this sets the \eqn{\sigma} slot of the dispersion to
+#' \code{W}, which maps \eqn{\phi \mapsto W\phi} before applying the
+#' base \eqn{\dot\chi^*}.
+#'
+#' @return A \code{dispersion} S3 object with \code{sigma = W}.
+#'   See \code{\link{entropy_dispersion}} for the structure.
+#'
+#' @examples
+#' # ATE with entropy penalty: positive weights for treated,
+#' # negative for control
+#' W <- c(1, 1, -1, -1, 1)
+#' d <- sign_flip_dispersion(entropy_base, W)
+#'
+#' @export
 sign_flip_dispersion = function(base, W) dispersion(base, sigma = W)
 
 #' ### `target_scaled_entropy_dispersion`

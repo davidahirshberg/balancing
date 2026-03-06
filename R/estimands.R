@@ -44,8 +44,25 @@
 # Single-outcome estimands (spinoff4)
 # ============================================================
 
-#' ## Treatment-Specific Mean (TSM)
+#' Treatment-specific mean (TSM) estimand
 #'
+#' Constructs the treatment-specific mean estimand for arm \code{arm}.
+#' The target parameter is \eqn{\psi^w(\mu) = E[\mu(w, X)]}, the
+#' expected potential outcome under treatment \eqn{w}.
+#'
+#' @param arm Integer (0 or 1). Which treatment arm's mean to estimate.
+#'
+#' @return An \code{"effect_estimand"} object (list) with components:
+#'   \describe{
+#'     \item{\code{name}}{Character label, e.g. \code{"tsm1"}.}
+#'     \item{\code{type}}{\code{"single_outcome"}.}
+#'     \item{\code{theta(mu1, mu0)}}{Plug-in functional: \eqn{\hat P \hat\mu_w(X)}.}
+#'     \item{\code{se(mu1, mu0, n)}}{Standard error of the plug-in.}
+#'     \item{\code{dr(mu1, mu0, Y, W, gamma1, gamma0)}}{Doubly-robust
+#'       estimate returning a list with \code{est}, \code{se}, \code{eif}.}
+#'   }
+#'
+#' @details
 #' **Paper**: \eqn{\psi^w(\mu) = E\,\mu(w, X)} with Riesz representer
 #' \eqn{\gamma_{\dot\psi^w}(W, X) = \mathbf{1}(W = w) / \pi_w(X)}.
 #'
@@ -53,6 +70,16 @@
 #' \eqn{\hat P\,\hat\gamma_w(Y - \hat\mu_w)}. EIF:
 #' \eqn{\hat V_i = \hat\mu_w(X_i) - \hat\psi + \hat\gamma_w(Z_i)
 #' \{Y_i - \hat\mu_w(Z_i)\}}.
+#'
+#' @examples
+#' tsm1 <- treatment_specific_mean(arm = 1)
+#' tsm0 <- treatment_specific_mean(arm = 0)
+#' tsm1$name
+#' # "tsm1"
+#'
+#' @seealso \code{\link{vcate}}, \code{\link{risk_ratio}} for other
+#'   single-outcome estimands.
+#' @export
 treatment_specific_mean = function(arm = 1) {
   structure(list(
     name = paste0("tsm", arm),
@@ -87,8 +114,26 @@ treatment_specific_mean = function(arm = 1) {
   ), class = c("effect_estimand", "estimand"))
 }
 
-#' ## Variance of CATE (VCATE)
+#' Variance of the conditional average treatment effect (VCATE) estimand
 #'
+#' Constructs the VCATE estimand. The target parameter is the variance of
+#' the conditional average treatment effect:
+#' \deqn{\psi(\mu) = \mathrm{Var}(\mu_1(X) - \mu_0(X)) = E[\tau(X)^2] - (E[\tau(X)])^2}
+#' where \eqn{\tau(X) = \mu_1(X) - \mu_0(X)}. This is a second-order
+#' (quadratic) functional in \eqn{\mu}.
+#'
+#' @return An \code{"effect_estimand"} object (list) with components:
+#'   \describe{
+#'     \item{\code{name}}{\code{"vcate"}.}
+#'     \item{\code{type}}{\code{"single_outcome"}.}
+#'     \item{\code{theta(mu1, mu0)}}{Plug-in functional.}
+#'     \item{\code{se(mu1, mu0, n)}}{Standard error of the plug-in.}
+#'     \item{\code{dr(mu1, mu0, Y, W, gamma1, gamma0)}}{Doubly-robust
+#'       estimate returning a list with \code{est}, \code{se}, \code{eif},
+#'       and \code{ate_dr}.}
+#'   }
+#'
+#' @details
 #' **Paper**: \eqn{\psi(\mu) = \mathrm{Var}(\mu_1(X) - \mu_0(X))}
 #' \eqn{= E[\tau(X)^2] - (E[\tau(X)])^2} where \eqn{\tau(X) = \mu_1(X) -
 #' \mu_0(X)}. This is a second-order functional (quadratic in
@@ -103,6 +148,14 @@ treatment_specific_mean = function(arm = 1) {
 #' \eqn{\hat V_i = (\hat\tau_i - \hat\psi_{\mathrm{ATE}})^2 +
 #' 2(\hat\tau_i - \hat\psi_{\mathrm{ATE}})(\hat\gamma_{1i} r_{1i}
 #' - \hat\gamma_{0i} r_{0i}) - \hat\psi}.
+#'
+#' @examples
+#' est <- vcate()
+#' est$name
+#' # "vcate"
+#'
+#' @seealso \code{\link{treatment_specific_mean}}, \code{\link{risk_ratio}}
+#' @export
 vcate = function() {
   structure(list(
     name = "vcate",
@@ -137,8 +190,24 @@ vcate = function() {
   ), class = c("effect_estimand", "estimand"))
 }
 
-#' ## Risk Ratio
+#' Risk ratio estimand
 #'
+#' Constructs the risk ratio estimand. The target parameter is the ratio
+#' of treatment-specific means:
+#' \deqn{\psi(\mu) = E[\mu_1(X)] / E[\mu_0(X)]}
+#'
+#' @return An \code{"effect_estimand"} object (list) with components:
+#'   \describe{
+#'     \item{\code{name}}{\code{"rr"}.}
+#'     \item{\code{type}}{\code{"single_outcome"}.}
+#'     \item{\code{theta(mu1, mu0)}}{Plug-in functional.}
+#'     \item{\code{se(mu1, mu0, n)}}{Standard error via delta method.}
+#'     \item{\code{dr(mu1, mu0, Y, W, gamma1, gamma0)}}{Doubly-robust
+#'       estimate returning a list with \code{est}, \code{se}, \code{eif},
+#'       \code{tsm1}, \code{tsm0}.}
+#'   }
+#'
+#' @details
 #' **Paper**: \eqn{\psi(\mu) = E[\mu_1(X)] / E[\mu_0(X)]}.
 #' The EIF uses the delta method on the ratio of two TSMs:
 #' \eqn{\hat V_i^{\mathrm{RR}} = \hat V_i^{(1)} / \hat\psi_0
@@ -147,6 +216,14 @@ vcate = function() {
 #'
 #' **Code**: computes both arm-specific TSM DR estimates, takes
 #' the ratio, and constructs the delta-method EIF.
+#'
+#' @examples
+#' est <- risk_ratio()
+#' est$name
+#' # "rr"
+#'
+#' @seealso \code{\link{treatment_specific_mean}}, \code{\link{vcate}}
+#' @export
 risk_ratio = function() {
   structure(list(
     name = "rr",
@@ -184,8 +261,31 @@ risk_ratio = function() {
 # Survival estimands (spinoff3)
 # ============================================================
 
-#' ## Survival Probability TSM
+#' Survival probability treatment-specific mean estimand
 #'
+#' Constructs a survival probability TSM estimand for arm \code{arm}.
+#' The target parameter is the marginal survival probability at the
+#' time horizon under treatment \eqn{w}:
+#' \deqn{\psi^w(\lambda) = E[S_{\bar t}(w, X)]}
+#'
+#' @param arm Integer (0 or 1). Which treatment arm's survival probability
+#'   to estimate.
+#'
+#' @return A \code{"survival_estimand"} object (list) with components:
+#'   \describe{
+#'     \item{\code{name}}{Character label, e.g. \code{"survival.probability.tsm1"}.}
+#'     \item{\code{type}}{\code{"survival"}.}
+#'     \item{\code{arm}}{The treatment arm.}
+#'     \item{\code{direct(predict_dLambda, eval_Z, grid)}}{Plug-in survival
+#'       probability, an n-vector.}
+#'     \item{\code{dot_psi_Z(predict_dLambda, eval_Z, grid)}}{Gateaux
+#'       derivative; returns a closure \code{function(k)} giving an n-vector.}
+#'     \item{\code{dpsi_grid(predict_dLambda, eval_Z, mesh_u, train_grid)}}{
+#'       Counterfactual evaluation grid for gamma embedding.}
+#'     \item{\code{W_fn(A)}}{Per-subject sign vector for dispersion.}
+#'   }
+#'
+#' @details
 #' **Paper**: \eqn{\psi^w(\lambda) = E[S_{\bar t}(w, X)]} where
 #'
 #' - Discrete: \eqn{S_{\bar t}(w, X) = \prod_{u \in \mathcal{U}}
@@ -204,6 +304,16 @@ risk_ratio = function() {
 #' returns a closure over grid index \eqn{k}. `dpsi_grid` builds the
 #' counterfactual evaluation grid \eqn{Z_{\mathrm{ctf}} = (u_m, w, X_i)}
 #' for the gamma embedding vector \eqn{c_\gamma}.
+#'
+#' @examples
+#' tsm1 <- survival_probability_tsm(arm = 1)
+#' tsm0 <- survival_probability_tsm(arm = 0)
+#' tsm1$name
+#' # "survival.probability.tsm1"
+#'
+#' @seealso \code{\link{survival_probability_ate}}, \code{\link{rmst_ate}},
+#'   \code{\link{balancing_estimate}}
+#' @export
 survival_probability_tsm = function(arm) {
   structure(list(
     name = paste0("survival.probability.tsm", arm),
@@ -245,8 +355,32 @@ survival_probability_tsm = function(arm) {
   ), class = c("survival_estimand", "estimand"))
 }
 
-#' ## Survival Probability ATE
+#' Survival probability average treatment effect estimand
 #'
+#' Constructs the survival probability ATE estimand. The target parameter
+#' is the difference in marginal survival probabilities at the time horizon:
+#' \deqn{\psi(\lambda) = E[S_{\bar t}(1, X)] - E[S_{\bar t}(0, X)]}
+#'
+#' @return A \code{"survival_estimand"} object (list) with components:
+#'   \describe{
+#'     \item{\code{name}}{\code{"survival.probability"}.}
+#'     \item{\code{type}}{\code{"survival"}.}
+#'     \item{\code{direct(predict_dLambda, eval_Z, grid)}}{Plug-in ATE of
+#'       survival probability, an n-vector.}
+#'     \item{\code{dot_psi_Z(predict_dLambda, eval_Z, grid)}}{Gateaux
+#'       derivative; returns \code{function(k)} giving the ATE derivative
+#'       as an n-vector.}
+#'     \item{\code{dot_psi_arm(predict_dLambda, eval_Z, grid, arm)}}{
+#'       Per-arm Gateaux derivative for gamma embedding with ATE sign-flip.}
+#'     \item{\code{dpsi_grid(predict_dLambda, eval_Z, mesh_u, train_grid)}}{
+#'       Stacked counterfactual evaluation grid for gamma embedding.}
+#'     \item{\code{W_fn(A)}}{Maps \eqn{\{0,1\} \to \{-1,+1\}} for
+#'       sign-flip dispersion.}
+#'     \item{\code{gamma_disp_sigma(A)}}{Sign constraint for the gamma
+#'       dispersion: \eqn{-(2A - 1)}.}
+#'   }
+#'
+#' @details
 #' **Paper**: \eqn{\psi(\lambda) = E[S_{\bar t}(1, X)] -
 #' E[S_{\bar t}(0, X)]} with Gateaux derivative
 #' \eqn{\dot\psi_Z(\lambda)[h]_k = \dot\psi^1_{Z,k} - \dot\psi^0_{Z,k}}.
@@ -262,6 +396,15 @@ survival_probability_tsm = function(arm) {
 #' \eqn{r_1 > 0} and \eqn{r_0 < 0} (negated for ATE = \eqn{\psi^1 - \psi^0}).
 #' `W_fn(A) = 2A - 1` maps \eqn{\{0,1\} \to \{-1,+1\}} for the
 #' sign-flip dispersion.
+#'
+#' @examples
+#' est <- survival_probability_ate()
+#' est$name
+#' # "survival.probability"
+#'
+#' @seealso \code{\link{survival_probability_tsm}}, \code{\link{rmst_ate}},
+#'   \code{\link{balancing_estimate}}
+#' @export
 survival_probability_ate = function() {
   structure(list(
     name = "survival.probability",
@@ -325,21 +468,34 @@ survival_probability_ate = function() {
 
 # ---- RMST estimands ----
 
-#' ## RMST TSM
+#' RMST treatment-specific mean estimand
 #'
+#' Constructs the RMST TSM estimand for arm \code{arm}. The target
+#' parameter is the restricted mean survival time under treatment \eqn{w}:
+#' \deqn{\psi^w_{\mathrm{RMST}}(\lambda) =
+#' E\bigl[\int_0^{\bar t} S_u(w, X)\,du\bigr]}
+#'
+#' @param arm Integer (0 or 1). Which treatment arm.
+#'
+#' @return A \code{"survival_estimand"} object (list) with the same
+#'   structure as \code{\link{survival_probability_tsm}}.
+#'
+#' @details
 #' **Paper**: \eqn{\psi^w_{\mathrm{RMST}}(\lambda) =
 #' E\bigl[\int_0^{\bar t} S_u(w, X)\,du\bigr]} (continuous) or
 #' \eqn{E\bigl[\sum_{u=1}^{\bar t} S_u(w, X)\bigr]} (discrete).
 #'
 #' The Gateaux derivative (continuous):
 #' \eqn{\dot\psi^w_{Z,k} = -\int_k^{\bar t} S_u(w, X)\,du}
-#' — the tail integral of the survival curve from grid point \eqn{k}.
+#' --- the tail integral of the survival curve from grid point \eqn{k}.
 #'
 #' **Code**: `direct` calls `rmst(dL, grid)` which computes
 #' \eqn{\int S_u\,du} via the grid's quadrature weights.
 #' `dot_psi_Z` calls `rmst_dot` which precomputes the tail
 #' integral (discrete: rectangle sum; continuous: trapezoid
 #' cumulative) and returns a closure over \eqn{k}.
+#'
+#' @keywords internal
 rmst_tsm = function(arm) {
   structure(list(
     name = paste0("rmst.tsm", arm),
@@ -381,8 +537,21 @@ rmst_tsm = function(arm) {
   ), class = c("survival_estimand", "estimand"))
 }
 
-#' ## RMST ATE
+#' Restricted mean survival time (RMST) average treatment effect estimand
 #'
+#' Constructs the RMST ATE estimand. The target parameter is the
+#' difference in restricted mean survival times:
+#' \deqn{\psi_{\mathrm{RMST}}(\lambda) =
+#' E\bigl[\int_0^{\bar t} S_u(1, X)\,du\bigr] -
+#' E\bigl[\int_0^{\bar t} S_u(0, X)\,du\bigr]}
+#'
+#' @return A \code{"survival_estimand"} object (list) with the same
+#'   structure as \code{\link{survival_probability_ate}}: components
+#'   \code{name} (\code{"rmst"}), \code{type}, \code{direct},
+#'   \code{dot_psi_Z}, \code{dot_psi_arm}, \code{dpsi_grid},
+#'   \code{W_fn}, and \code{gamma_disp_sigma}.
+#'
+#' @details
 #' **Paper**: \eqn{\psi_{\mathrm{RMST}}(\lambda) =
 #' E\bigl[\int_0^{\bar t} S_u(1, X)\,du\bigr] -
 #' E\bigl[\int_0^{\bar t} S_u(0, X)\,du\bigr]}.
@@ -392,9 +561,18 @@ rmst_tsm = function(arm) {
 #'   \int_v^{\bar t} S_u(W, X)\,du}{\pi(W, X)\, S_v(W, X)\,
 #'   G_v(W, X)}}
 #'
-#' **Code**: same structure as `survival_probability_ate` —
+#' **Code**: same structure as `survival_probability_ate` ---
 #' evaluates both arms, takes the difference. Uses `rmst_dot`
 #' for the tail-integral derivative.
+#'
+#' @examples
+#' est <- rmst_ate()
+#' est$name
+#' # "rmst"
+#'
+#' @seealso \code{\link{survival_probability_ate}},
+#'   \code{\link{survival_probability_tsm}}, \code{\link{balancing_estimate}}
+#' @export
 rmst_ate = function() {
   structure(list(
     name = "rmst",
