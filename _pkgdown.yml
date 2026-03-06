@@ -2,13 +2,17 @@ url: https://davidahirshberg.github.io/balancing/
 
 template:
   bootstrap: 5
+  includes:
+    in_header: |
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+      <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+      <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
 
 reference:
   - title: "Estimation"
     contents:
       - balancing_estimate
       - survival_effect
-      - estimate
 
   - title: "Estimands"
     contents:
@@ -18,12 +22,11 @@ reference:
       - survival_probability_ate
       - survival_probability_tsm
       - rmst_ate
-      - rmst_tsm
 
   - title: "Kernels"
     contents:
       - matern_kernel
-      - direct_product
+      - direct_product_kernel
       - kernel_matrix
 
   - title: "Dispersions"
@@ -45,7 +48,7 @@ reference:
     contents:
       - fit_lambda
       - fit_gamma
-      - aggregate_dr
+      - pool_folds
       - mesh_project
       - discrete_grid
       - continuous_grid
@@ -53,9 +56,8 @@ reference:
   - title: "Bootstrap and inference"
     contents:
       - bootstrap
-      - ci_t
-      - ci_pct
-      - n_bad
+      - bootstrap_t_interval
+      - percentile_bootstrap_interval
 
   - title: "Internals"
     desc: >
