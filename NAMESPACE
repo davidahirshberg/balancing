@@ -1,6 +1,5 @@
 # Kernels
 export(matern_kernel)
-export(gaussian_kernel)
 export(direct_product)
 export(kernel_matrix)
 
@@ -8,7 +7,7 @@ export(kernel_matrix)
 export(entropy_dispersion)
 export(softplus_dispersion)
 export(quadratic_dispersion)
-export(signflip)
+export(sign_flip_dispersion)
 
 # Solver
 export(kernel_bregman)

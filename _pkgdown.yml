@@ -23,7 +23,6 @@ reference:
   - title: "Kernels"
     contents:
       - matern_kernel
-      - gaussian_kernel
       - direct_product
       - kernel_matrix
 
@@ -32,7 +31,7 @@ reference:
       - entropy_dispersion
       - softplus_dispersion
       - quadratic_dispersion
-      - signflip
+      - sign_flip_dispersion
 
   - title: "Tuning"
     contents:

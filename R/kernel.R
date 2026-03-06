@@ -1,23 +1,25 @@
-## Kernel infrastructure.
-##
-## Kernel constructors (isotropic + product), kernel matrix computation,
-## pivoted Cholesky, block-diagonal matrix, and link functions.
+#' # Kernel Infrastructure
+#'
+#' Kernel constructors (isotropic + product), kernel matrix
+#' computation, pivoted Cholesky, block-diagonal matrix, and
+#' link functions.
 
 # When sourced directly (not via load_all), pull in utils.R.
 if (!exists("atleast_2d", mode = "function")) source("R/utils.R")
 
 
-# ============================================================
-# Utilities (atleast_2d, with_treatment in utils.R)
-# ============================================================
-
-#' Pivoted Cholesky factorization of a symmetric PSD matrix.
-#' Returns a pchol object with $R (upper triangular), $pivot, $rank, $n.
-#' K[pivot, pivot] = t(R) %*% R.
-pchol = function(K) {
+#' ## Pivoted Cholesky
+#'
+#' `pchol(K)` computes $K[\pi, \pi] = R^\top R$ where $R$ is
+#' upper triangular and $\pi$ is a permutation that improves
+#' numerical stability. `pchol_solve(pc, b)` solves $Kx = b$
+#' via forward/back substitution on the permuted system.
+pchol = function(K, eps = 1e-8) {
+  n = ncol(K)
+  K = K + (eps * sum(diag(K)) / n) * diag(n)
   R = suppressWarnings(chol(K, pivot = TRUE))
   structure(list(R = R, pivot = attr(R, "pivot"),
-                 rank = attr(R, "rank"), n = ncol(K)),
+                 rank = attr(R, "rank"), n = n),
             class = "pchol")
 }
 
@@ -38,16 +40,16 @@ pchol_solve = function(pc, b) {
 }
 
 
-# ============================================================
-# Block-diagonal matrix (for product kernel .phi)
-# ============================================================
-
-#' Lightweight block-diagonal matrix: stores dense sub-blocks with
-#' row/col index mappings. Avoids materializing the full n × m matrix.
+#' ## Block-Diagonal Matrix
 #'
-#' @param blocks List of list(rows, cols, K) where K is a dense matrix,
-#'   rows are global row indices, cols are global column indices.
-#' @param n_row Total number of rows in the full matrix.
+#' **Paper**: for a product kernel $k((w,x),(w',x')) =
+#' k_X(x,x')\,\mathbf{1}\{w=w'\}$, the kernel matrix is
+#' block-diagonal with one dense block per treatment level.
+#'
+#' **Code**: `block_diag` stores the dense sub-blocks without
+#' materializing the full $n \times m$ matrix. The `%*%` method
+#' performs block-diagonal matrix-vector multiply:
+#' $y_{\mathrm{rows}_b} \mathrel{+}= K_b\, x_{\mathrm{cols}_b}$.
 block_diag = function(blocks, n_row) {
   structure(list(blocks = blocks, n_row = n_row), class = "block_diag")
 }
@@ -64,46 +66,53 @@ block_diag = function(blocks, n_row) {
 }
 
 
-# ============================================================
-# Kernel constructors
-# ============================================================
-
-#' Matern kernel. null_basis: Z -> matrix(n, d) for ker(rho).
-#' Default: constant functions (intercept). No null space:
-#'   function(Z) matrix(nrow = nrow(atleast_2d(Z)), ncol = 0)
-matern_kernel = function(sigma = 1, nu = 3/2,
+#' ## Kernel Constructors
+#'
+#' ### `matern_kernel`
+#'
+#' **Paper**: the Mat\'ern kernel with smoothness $\nu$ and
+#' length scale $\sigma$:
+#' $$k(z, z') = \frac{2^{1-\nu}}{\Gamma(\nu)}
+#'   \Bigl(\frac{\sqrt{2\nu}}{\sigma}\|z-z'\|\Bigr)^\nu
+#'   K_\nu\!\Bigl(\frac{\sqrt{2\nu}}{\sigma}\|z-z'\|\Bigr)$$
+#' Special cases: $\nu = 1/2$ (exponential), $\nu = 3/2$
+#' (default), $\nu = 5/2$.
+#'
+#' The `null_basis` attribute defines $\ker(\rho)$. Default:
+#' constant functions (intercept, $B = \mathbf{1}$). For norm
+#' penalty (no null space): `function(Z) matrix(nrow=nrow(Z), ncol=0)`.
+matern_kernel = function(sigma = 1, nu = 3/2, scale = NULL,
                          null_basis = function(Z) matrix(1, nrow(atleast_2d(Z)), 1)) {
   pointwise = function(z, zp) {
     z = atleast_2d(z)
-    d2 = colSums((t(z) - c(zp))^2)
-    r = (sqrt(2 * nu) / sigma) * sqrt(d2)
+    diff = t(z) - c(zp)
+    if (!is.null(scale)) diff = diff / scale  # per-dimension length scales
+    d2 = colSums(diff^2)
+    r = sqrt(2 * nu) * sqrt(d2)
     if (nu == 1/2) return(exp(-r))
     if (nu == 3/2) return((1 + r) * exp(-r))
     if (nu == 5/2) return((1 + r + r^2 / 3) * exp(-r))
     ifelse(r == 0, 1, (2^(1 - nu) / gamma(nu)) * r^nu * besselK(r, nu))
   }
+  if (is.null(scale) && sigma != 1) scale = NULL  # isotropic: handled via sigma in fast path
   structure(pointwise, class = "kernel", type = "matern", sigma = sigma, nu = nu,
-            null_basis = null_basis)
+            scale = scale, null_basis = null_basis)
 }
 
-gaussian_kernel = function(sigma = 1,
-                           null_basis = function(Z) matrix(1, nrow(atleast_2d(Z)), 1)) {
-  pointwise = function(z, zp) {
-    z = atleast_2d(z)
-    d2 = colSums((t(z) - c(zp))^2)
-    exp(-d2 / (2 * sigma^2))
-  }
-  structure(pointwise, class = "kernel", type = "gaussian", sigma = sigma,
-            null_basis = null_basis)
-}
 
-#' Direct product: k((w,x),(w',x')) = k_x(x,x') * 1{w=w'}.
-#' One copy of ker(rho_x) per grouping level.
-#' iw: column indices in Z that hold grouping variable(s).
-#' levels (required): for single iw, a vector of values. For multiple iw,
-#'   a list of per-column level vectors (Cartesian product taken automatically).
-#'   Defines the direct product decomposition — data must only contain
-#'   declared levels.
+#' ### `direct_product`
+#'
+#' **Paper**: the product kernel
+#' $$k\bigl((w,x),(w',x')\bigr) = k_X(x,x')\,\mathbf{1}\{w=w'\}$$
+#' decomposes the RKHS into one copy of $\mathcal{H}_{k_X}$ per
+#' treatment arm. The null space of the product seminorm has one
+#' copy of $\ker(\rho_X)$ per level: $B = \mathrm{blkdiag}(B_X,
+#' \ldots, B_X)$.
+#'
+#' **Code**: `iw` gives the column indices in $Z$ that hold the
+#' grouping variable(s). `levels` declares the set of
+#' treatment values (data must only contain declared levels).
+#' The kernel matrix is computed as $K_X \odot \mathbf{1}\{W_i = W_j\}$.
 direct_product = function(k_x, iw = 1, levels) {
   # Expand list of per-column levels to pasted Cartesian product
   if (is.list(levels)) {
@@ -148,10 +157,12 @@ null_basis = function(Z, kern) {
 }
 
 
-# ============================================================
-# Kernel matrix computation
-# ============================================================
-
+#' ## Kernel Matrix Computation
+#'
+#' `kernel_matrix(A, B, kern)` computes $K_{ij} = k(A_i, B_j)$.
+#' S3 dispatch on `kern`:
+#' - `product_kernel`: $K_X \odot \mathrm{mask}$, mask from grouping cols
+#' - `kernel` (isotropic): fast squared-distance + `.kernel_from_D2`
 kernel_matrix = function(A, B, kern) UseMethod("kernel_matrix", kern)
 
 kernel_matrix.product_kernel = function(A, B, kern) {
@@ -168,25 +179,24 @@ kernel_matrix.kernel = function(A, B, kern) {
   A = atleast_2d(A); B = atleast_2d(B)
   ktype = attr(kern, "type")
   if (!is.null(ktype) && ktype %in% c("matern", "gaussian")) {
+    sc = attr(kern, "scale")
+    if (!is.null(sc)) {
+      A = t(t(A) / sc); B = t(t(B) / sc)
+    }
     D2 = .fast_sqdist(A, B)
     return(.kernel_from_D2(D2, kern))
   }
   outerproduct(A, B, kern)
 }
 
-outerproduct = function(A, B, K) {
-  A = atleast_2d(A); B = atleast_2d(B)
-  O = matrix(0, nrow(A), nrow(B))
-  for (ib in 1:nrow(B)) O[, ib] = K(A, B[ib, , drop = FALSE])
-  O
-}
-
 .kernel_from_D2 = function(D2, kern) {
   ktype = attr(kern, "type")
   sig = attr(kern, "sigma")
+  sc = attr(kern, "scale")
   if (ktype == "matern") {
     nu = attr(kern, "nu")
-    R = (sqrt(2 * nu) / sig) * sqrt(D2)
+    # When scale is set, data is already rescaled; otherwise use isotropic sigma
+    R = if (!is.null(sc)) sqrt(2 * nu) * sqrt(D2) else (sqrt(2 * nu) / sig) * sqrt(D2)
     if (nu == 1/2) return(exp(-R))
     if (nu == 3/2) return((1 + R) * exp(-R))
     if (nu == 5/2) return((1 + R + R^2 / 3) * exp(-R))
@@ -204,10 +214,22 @@ outerproduct = function(A, B, K) {
 }
 
 
-# ============================================================
-# Link functions (survival-specific, used by cts-gridfree.R)
-# ============================================================
-
+#' ## Link Functions (Survival)
+#'
+#' **Paper**: the hazard model uses a link function $\sigma$
+#' mapping the dual variable $\phi_\lambda$ to the hazard rate:
+#' $\hat\lambda_u = \sigma(\hat\phi_{\lambda,u})$.
+#'
+#' - **Exponential**: $\sigma(\phi) = e^\phi$. Continuous-time
+#'   survival via $S_t = \exp(-\int_0^t \lambda_u\,du)$
+#'   (trapezoidal quadrature).
+#' - **Logistic**: $\sigma(\phi) = e^\phi/(1+e^\phi)$.
+#'   Discrete-time survival via $S_t = \prod_u (1 - \lambda_u)$.
+#'
+#' Each link provides `cum_surv(haz_fn, Q, du)` for
+#' $\hat S_t$, `cum_rmst(...)` for $\int_0^t \hat S_u\,du$,
+#' and `surv_curve(...)` for the full $[\hat S_{u_1}, \ldots,
+#' \hat S_{u_Q}]$ matrix.
 exp_link = function() {
   list(
     name = "exp",

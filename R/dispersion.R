@@ -1,18 +1,35 @@
-# ============================================================
-# Dispersions: S3 class with composable base records
-# ============================================================
-#
-#' **Primal.** The Z-dependent dispersion shifts and sign-flips a base chi:
-#'   chi_Z(gamma) = v * chi(sigma * (gamma - o))
-#' where chi is the base, o is the offset (balancing target),
-#' sigma = sign(o) is the sign-flip, v >= 0 is the penalty scale.
+#' # Dispersions
 #'
-#' **Conjugate.** With psi = sigma * phi / v:
-#'   chi*_Z(phi)      = o * phi + v * chi*(psi)
-#'   dot chi*_Z(phi)   = o + sigma * dot chi*(psi)        [v cancels in chain rule]
-#'   ddot chi*_Z(phi)  = ddot chi*(psi) / v
+#' S3 class with composable base records for the Bregman
+#' divergence penalty.
 #'
-#' Base records carry the irreducible math. The S3 class handles composition.
+#' ## Z-Dependent Dispersion
+#'
+#' **Paper**: the primal dispersion $\chi_Z$ shifts and
+#' sign-flips a base $\chi$:
+#' $$\chi_Z(\gamma) = v\,\chi\bigl(\sigma(\gamma - o)\bigr)$$
+#' where $o$ is the offset (balancing target), $\sigma =
+#' \mathrm{sign}(o)$ is the sign-flip, and $v \ge 0$ is the
+#' penalty scale.
+#'
+#' **Code** (conjugate, used by the dual solver):
+#' with $\psi = \sigma\,\phi / v$,
+#' $$\chi^*_Z(\phi) = o\,\phi + v\,\chi^*(\psi)$$
+#' $$\dot\chi^*_Z(\phi) = o + \sigma\,\dot\chi^*(\psi)$$
+#' $$\ddot\chi^*_Z(\phi) = \ddot\chi^*(\psi) / v$$
+#' The $v$ cancels in $\dot\chi^*_Z$ because $\partial\psi /
+#' \partial\phi = \sigma/v$ and $\dot\chi^*(\psi)\cdot\sigma/v
+#' \cdot v = \sigma\,\dot\chi^*(\psi)$.
+#'
+#' ## Dispersion Table
+#'
+#' | Name | $\chi^*(\phi)$ | $\dot\chi^*(\phi)$ | $\ddot\chi^*(\phi)$ |
+#' |------|----------------|--------------------|--------------------|
+#' | Quadratic | $\phi^2/2$ | $\phi$ | $1$ |
+#' | Entropy | $e^\phi$ | $e^\phi$ | $e^\phi$ |
+#' | Softplus | $\log(1+e^\phi)$ | $\sigma(\phi)$ | $\sigma(\phi)(1-\sigma(\phi))$ |
+#' | Shifted entropy | $\phi + e^\phi$ | $1 + e^\phi$ | $e^\phi$ |
+#' | Pos. quadratic | $(\phi_+)^2/2$ | $\phi_+$ | $\mathbf{1}(\phi>0)$ |
 
 # ---- S3 generics (dot-prefix to avoid clash with local lambdas) ----
 
@@ -66,14 +83,11 @@ pos_quadratic_base = list(
   chis   = function(phi) pmax(phi, 0)^2 / 2
 )
 
-# ---- Constructor ----
-
-#' Build a dispersion from a base record with optional composition.
+#' ## Constructor
 #'
-#' @param base  Named list with $dchis, $ddchis, $chis.
-#' @param offset  Per-observation offset o (balancing target). Default 0.
-#' @param sigma  Per-observation sign-flip in {-1, +1}. Default 1 (no flip).
-#' @param v  Per-observation penalty scale (v >= 0). Default 1.
+#' `dispersion(base, offset, sigma, v)` builds a Z-dependent
+#' dispersion from a base record. The S3 methods `.dchis`,
+#' `.ddchis`, `.chis` apply the composition formulas above.
 dispersion = function(base, offset = 0, sigma = 1, v = 1)
   structure(list(base = base, offset = offset, sigma = sigma, v = v),
             class = "dispersion")
@@ -98,23 +112,47 @@ dispersion = function(base, offset = 0, sigma = 1, v = 1)
   disp$offset * phi + disp$v * disp$base$chis(psi)
 }
 
-# ---- Convenience aliases ----
-#' These preserve existing call signatures. Each returns a dispersion S3 object.
+#' ## Convenience Constructors
+#'
+#' Wrappers that build common dispersions with readable names.
 
 entropy_dispersion   = function() dispersion(entropy_base)
+#' @rdname entropy_dispersion
 softplus_dispersion  = function() dispersion(softplus_base)
+#' @rdname entropy_dispersion
 quadratic_dispersion = function() dispersion(quadratic_base)
 shifted_entropy_dispersion = function() dispersion(shifted_entropy_base)
 
-#' Sign-flip: chi_Z(gamma) = chi(W * gamma). W in {-1, +1}.
-signflip = function(base, W) dispersion(base, sigma = W)
+#' ### `sign_flip_dispersion`
+#'
+#' **Paper**: for ATE weights, $\chi_Z(\gamma) = \chi(W\gamma)$
+#' with $W \in \{-1, +1\}$. Treated units ($W = +1$) get positive
+#' weights; control units ($W = -1$) get negative weights.
+#'
+#' **Code**: `dispersion(base, sigma = W)` — the sign-flip goes
+#' into the $\sigma$ slot, which maps $\phi \mapsto W\phi$
+#' before applying the base $\dot\chi^*$.
+sign_flip_dispersion = function(base, W) dispersion(base, sigma = W)
 
-#' Target-scaled entropy: gamma = r + sigma * exp(sigma * phi), sigma = sign(r).
-#' Floors |gamma| at |r|, then adaptive entropy on the excess.
+#' ### `target_scaled_entropy`
+#'
+#' **Paper**: $\chi^*_Z(\phi) = r\,\phi + e^{\mathrm{sign}(r)\,\phi}$
+#' giving $\hat\gamma = r + \mathrm{sign}(r)\,e^{\mathrm{sign}(r)\,\phi}$.
+#' Floors $|\hat\gamma|$ at $|r|$ (the Riesz representer
+#' approximation), then exponential on the excess.
+#'
+#' **Code**: `dispersion(entropy_base, offset = r, sigma = sign(r))`.
+#' This is the default weight dispersion in the survival pipeline.
 target_scaled_entropy = function(r)
   dispersion(entropy_base, offset = r, sigma = sign(r))
 
-#' Variance-weighted quadratic with sign-flip and target shift.
-#' chi_Z(gamma) = (v/2)(gamma - r)^2 on sign(gamma) = sign(r), |gamma| >= |r|.
+#' ### `variance_weighted_quadratic`
+#'
+#' **Paper**: $\chi_Z(\gamma) = \frac{v}{2}(\gamma - r)^2$ on
+#' $\mathrm{sign}(\gamma) = \mathrm{sign}(r)$, $|\gamma| \ge |r|$.
+#' The scale $v$ allows heteroskedastic weighting.
+#'
+#' **Code**: `dispersion(pos_quadratic_base, offset = r,
+#' sigma = sign(r), v = v)`.
 variance_weighted_quadratic = function(r, v)
   dispersion(pos_quadratic_base, offset = r, sigma = sign(r), v = v)
