@@ -10,8 +10,8 @@ if (!exists("atleast_2d", mode = "function")) source("R/utils.R")
 
 #' ## Pivoted Cholesky
 #'
-#' `pchol(K)` computes \eqn{K[\\pi, \\pi] = R^\\top R} where \eqn{R} is
-#' upper triangular and \eqn{\\pi} is a permutation that improves
+#' `pchol(K)` computes \eqn{K[\pi, \pi] = R^\top R} where \eqn{R} is
+#' upper triangular and \eqn{\pi} is a permutation that improves
 #' numerical stability. `pchol_solve(pc, b)` solves \eqn{Kx = b}
 #' via forward/back substitution on the permuted system.
 pchol = function(K, eps = 1e-8) {
@@ -43,13 +43,13 @@ pchol_solve = function(pc, b) {
 #' ## Block-Diagonal Matrix
 #'
 #' **Paper**: for a product kernel \eqn{k((w,x),(w',x')) =
-#' k_X(x,x')\\,\\mathbf\{1\}\\\{w=w'\\\}}, the kernel matrix is
+#' k_X(x,x')\,\mathbf{1}\{w=w'\}}, the kernel matrix is
 #' block-diagonal with one dense block per treatment level.
 #'
 #' **Code**: `block_diag` stores the dense sub-blocks without
-#' materializing the full \eqn{n \\times m} matrix. The `%*%` method
+#' materializing the full \eqn{n \times m} matrix. The `%*%` method
 #' performs block-diagonal matrix-vector multiply:
-#' \eqn{y_\{\\mathrm\{rows\}_b\} \\mathrel\{+\}= K_b\\, x_\{\\mathrm\{cols\}_b\}}.
+#' \eqn{y_{\mathrm{rows}_b} \mathrel{+}= K_b\, x_{\mathrm{cols}_b}}.
 block_diag = function(blocks, n_row) {
   structure(list(blocks = blocks, n_row = n_row), class = "block_diag")
 }
@@ -70,16 +70,16 @@ block_diag = function(blocks, n_row) {
 #'
 #' ### `matern_kernel`
 #'
-#' **Paper**: the Matern kernel with smoothness \eqn{\\nu} and
-#' length scale \eqn{\\sigma}:
-#' \deqn{k(z, z') = \\frac\{2^\{1-\\nu\}\}\{\\Gamma(\\nu)\}
-#'   \\Bigl(\\frac\{\\sqrt\{2\\nu\}\}\{\\sigma\}\\|z-z'\\|\\Bigr)^\\nu
-#'   K_\\nu\\!\\Bigl(\\frac\{\\sqrt\{2\\nu\}\}\{\\sigma\}\\|z-z'\\|\\Bigr)}
-#' Special cases: \eqn{\\nu = 1/2} (exponential), \eqn{\\nu = 3/2}
-#' (default), \eqn{\\nu = 5/2}.
+#' **Paper**: the Matern kernel with smoothness \eqn{\nu} and
+#' length scale \eqn{\sigma}:
+#' \deqn{k(z, z') = \frac{2^{1-\nu}}{\Gamma(\nu)}
+#'   \Bigl(\frac{\sqrt{2\nu}}{\sigma}\|z-z'\|\Bigr)^\nu
+#'   K_\nu\!\Bigl(\frac{\sqrt{2\nu}}{\sigma}\|z-z'\|\Bigr)}
+#' Special cases: \eqn{\nu = 1/2} (exponential), \eqn{\nu = 3/2}
+#' (default), \eqn{\nu = 5/2}.
 #'
-#' The `null_basis` attribute defines \eqn{\\ker(\\rho)}. Default:
-#' constant functions (intercept, \eqn{B = \\mathbf\{1\}}). For norm
+#' The `null_basis` attribute defines \eqn{\ker(\rho)}. Default:
+#' constant functions (intercept, \eqn{B = \mathbf{1}}). For norm
 #' penalty (no null space): `function(Z) matrix(nrow=nrow(Z), ncol=0)`.
 matern_kernel = function(sigma = 1, nu = 3/2, scale = NULL,
                          null_basis = function(Z) matrix(1, nrow(atleast_2d(Z)), 1)) {
@@ -103,16 +103,16 @@ matern_kernel = function(sigma = 1, nu = 3/2, scale = NULL,
 #' ### `direct_product_kernel`
 #'
 #' **Paper**: the product kernel
-#' \deqn{k\\bigl((w,x),(w',x')\\bigr) = k_X(x,x')\\,\\mathbf\{1\}\\\{w=w'\\\}}
-#' decomposes the RKHS into one copy of \eqn{\\mathcal\{H\}_\{k_X\}} per
+#' \deqn{k\bigl((w,x),(w',x')\bigr) = k_X(x,x')\,\mathbf{1}\{w=w'\}}
+#' decomposes the RKHS into one copy of \eqn{\mathcal{H}_{k_X}} per
 #' treatment arm. The null space of the product seminorm has one
-#' copy of \eqn{\\ker(\\rho_X)} per level: \eqn{B = \\mathrm\{blkdiag\}(B_X,
-#' \\ldots, B_X)}.
+#' copy of \eqn{\ker(\rho_X)} per level: \eqn{B = \mathrm{blkdiag}(B_X,
+#' \ldots, B_X)}.
 #'
 #' **Code**: `iw` gives the column indices in \eqn{Z} that hold the
 #' grouping variable(s). `levels` declares the set of
 #' treatment values (data must only contain declared levels).
-#' The kernel matrix is computed as \eqn{K_X \\odot \\mathbf\{1\}\\\{W_i = W_j\\\}}.
+#' The kernel matrix is computed as \eqn{K_X \odot \mathbf{1}\{W_i = W_j\}}.
 direct_product_kernel = function(k_x, iw = 1, levels) {
   # Expand list of per-column levels to pasted Cartesian product
   if (is.list(levels)) {
@@ -159,9 +159,9 @@ null_basis = function(Z, kern) {
 
 #' ## Kernel Matrix Computation
 #'
-#' `kernel_matrix(A, B, kern)` computes \eqn{K_\{ij\} = k(A_i, B_j)}.
+#' `kernel_matrix(A, B, kern)` computes \eqn{K_{ij} = k(A_i, B_j)}.
 #' S3 dispatch on `kern`:
-#' - `product_kernel`: \eqn{K_X \\odot \\mathrm\{mask\}}, mask from grouping cols
+#' - `product_kernel`: \eqn{K_X \odot \mathrm{mask}}, mask from grouping cols
 #' - `kernel` (isotropic): fast squared-distance + `.kernel_from_D2`
 kernel_matrix = function(A, B, kern) UseMethod("kernel_matrix", kern)
 
@@ -216,20 +216,20 @@ kernel_matrix.kernel = function(A, B, kern) {
 
 #' ## Link Functions (Survival)
 #'
-#' **Paper**: the hazard model uses a link function \eqn{\\sigma}
-#' mapping the dual variable \eqn{\\phi_\\lambda} to the hazard rate:
-#' \eqn{\\hat\\lambda_u = \\sigma(\\hat\\phi_\{\\lambda,u\})}.
+#' **Paper**: the hazard model uses a link function \eqn{\sigma}
+#' mapping the dual variable \eqn{\phi_\lambda} to the hazard rate:
+#' \eqn{\hat\lambda_u = \sigma(\hat\phi_{\lambda,u})}.
 #'
-#' - **Exponential**: \eqn{\\sigma(\\phi) = e^\\phi}. Continuous-time
-#'   survival via \eqn{S_t = \\exp(-\\int_0^t \\lambda_u\\,du)}
+#' - **Exponential**: \eqn{\sigma(\phi) = e^\phi}. Continuous-time
+#'   survival via \eqn{S_t = \exp(-\int_0^t \lambda_u\,du)}
 #'   (trapezoidal quadrature).
-#' - **Logistic**: \eqn{\\sigma(\\phi) = e^\\phi/(1+e^\\phi)}.
-#'   Discrete-time survival via \eqn{S_t = \\prod_u (1 - \\lambda_u)}.
+#' - **Logistic**: \eqn{\sigma(\phi) = e^\phi/(1+e^\phi)}.
+#'   Discrete-time survival via \eqn{S_t = \prod_u (1 - \lambda_u)}.
 #'
 #' Each link provides `cum_surv(haz_fn, Q, du)` for
-#' \eqn{\\hat S_t}, `cum_rmst(...)` for \eqn{\\int_0^t \\hat S_u\\,du},
-#' and `surv_curve(...)` for the full \eqn{[\\hat S_\{u_1\}, \\ldots,
-#' \\hat S_\{u_Q\}]} matrix.
+#' \eqn{\hat S_t}, `cum_rmst(...)` for \eqn{\int_0^t \hat S_u\,du},
+#' and `surv_curve(...)` for the full \eqn{[\hat S_{u_1}, \ldots,
+#' \hat S_{u_Q}]} matrix.
 exp_link = function() {
   list(
     name = "exp",

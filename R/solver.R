@@ -3,36 +3,36 @@
 #' ## `kernel_bregman`
 #'
 #' **Paper**: solve the regularized dual problem (eq:dual in spinoff3)
-#' \deqn{\\hat\\phi = \\arg\\min_\{\\rho(\\phi)<\\infty\} \\hat P\\,\\chi^*_Z(\\phi)
-#'   + \\eta\\,\\rho(\\phi)^2 - \\dot\\psi_Z(\\phi)}
-#' The weights are \eqn{\\hat\\gamma = \\dot\\chi^*_Z(\\hat\\phi)}.
-#' For a seminorm \eqn{\\rho} with null space \eqn{\\ker(\\rho) = \\mathrm\{span\}(B)},
-#' the representer theorem gives \eqn{\\hat\\phi = K\\alpha + B\\beta}.
+#' \deqn{\hat\phi = \arg\min_{\rho(\phi)<\infty} \hat P\,\chi^*_Z(\phi)
+#'   + \eta\,\rho(\phi)^2 - \dot\psi_Z(\phi)}
+#' The weights are \eqn{\hat\gamma = \dot\chi^*_Z(\hat\phi)}.
+#' For a seminorm \eqn{\rho} with null space \eqn{\ker(\rho) = \mathrm{span}(B)},
+#' the representer theorem gives \eqn{\hat\phi = K\alpha + B\beta}.
 #'
-#' **Code**: with \eqn{\\phi = K\\alpha + B\\beta}, the finite-dimensional
-#' objective over \eqn{\\theta = (\\alpha, \\beta)} is
-#' \deqn{L(\\theta) = \\sum_i w_i\\,\\chi^*(\\phi_i)
-#'   + \\tfrac\{n\\eta\}\{2\}\\,\\alpha^\\top K\\alpha
-#'   - c^\\top\\alpha - c_0^\\top\\beta}
+#' **Code**: with \eqn{\phi = K\alpha + B\beta}, the finite-dimensional
+#' objective over \eqn{\theta = (\alpha, \beta)} is
+#' \deqn{L(\theta) = \sum_i w_i\,\chi^*(\phi_i)
+#'   + \tfrac{n\eta}{2}\,\alpha^\top K\alpha
+#'   - c^\top\alpha - c_0^\top\beta}
 #' where \eqn{n} is the sample size (passed by the caller; defaults to
 #' `nrow(Z)` which is correct when basis = sample), \eqn{c} = `target`
 #' \eqn{= K r} (from `project_target`) and \eqn{c_0} = `target_null`
-#' \eqn{= B^\\top r}.
+#' \eqn{= B^\top r}.
 #'
 #' The gradient is
-#' \deqn{\\nabla_\\alpha L = K(w \\odot \\dot\\chi^*(\\phi))
-#'   + n\\eta\\,K\\alpha - c, \\quad
-#'   \\nabla_\\beta L = B^\\top(w \\odot \\dot\\chi^*(\\phi)) - c_0}
+#' \deqn{\nabla_\alpha L = K(w \odot \dot\chi^*(\phi))
+#'   + n\eta\,K\alpha - c, \quad
+#'   \nabla_\beta L = B^\top(w \odot \dot\chi^*(\phi)) - c_0}
 #'
 #' The Hessian-vector product \eqn{H v} uses
-#' \eqn{w_c = w \\odot \\ddot\\chi^*(\\phi)} (curvature weights):
-#' \deqn{H \\begin\{pmatrix\} v_\\alpha \\\\ v_\\beta \\end\{pmatrix\} =
-#'   \\begin\{pmatrix\} K(w_c \\odot (K v_\\alpha + B v_\\beta)) + n\\eta\\,K v_\\alpha \\\\
-#'   B^\\top(w_c \\odot (K v_\\alpha + B v_\\beta)) \\end\{pmatrix\}}
+#' \eqn{w_c = w \odot \ddot\chi^*(\phi)} (curvature weights):
+#' \deqn{H \begin{pmatrix} v_\alpha \\ v_\beta \end{pmatrix} =
+#'   \begin{pmatrix} K(w_c \odot (K v_\alpha + B v_\beta)) + n\eta\,K v_\alpha \\
+#'   B^\top(w_c \odot (K v_\alpha + B v_\beta)) \end{pmatrix}}
 #'
 #' Solved by trust-region Newton (Steihaug-Toint CG). Convergence
-#' criterion: Bregman divergence \eqn{D_\{\\chi^*\}(\\phi^\{(t)\}, \\phi^\{(t-1)\}) < } `tol`.
-#' For quadratic \eqn{\\chi^*} the Hessian is constant and the trust
+#' criterion: Bregman divergence \eqn{D_{\chi^*}(\phi^{(t)}, \phi^{(t-1)}) < } `tol`.
+#' For quadratic \eqn{\chi^*} the Hessian is constant and the trust
 #' region is infinite (`delta0 = Inf`), so one Newton step is exact.
 #'
 #' Stores a lazy Hessian inverse `get_M_lu` for `onestep_bregman`.
@@ -65,7 +65,7 @@ kernel_bregman = function(Z, kern, eta, dispersion,
     if (!is.null(beta0)) rep_len(as.numeric(beta0), d) else rep(0, d)
   } else numeric(0)
 
-  #' Lambda bindings: dchis(phi) reads like \eqn{\\dot\\chi^*(\\phi)}.
+  #' Lambda bindings: dchis(phi) reads like \eqn{\dot\chi^*(\phi)}.
   disp = dispersion
   dchis  = function(phi) .dchis(disp, phi)
   ddchis = function(phi) .ddchis(disp, phi)
@@ -102,8 +102,8 @@ kernel_bregman = function(Z, kern, eta, dispersion,
     c(Hv_a, Hv_b)
   }
 
-  #' Bregman divergence \eqn{D_\{\\chi^*\}(\\phi_\{new\}, \\phi_\{old\}) = \\sum w_i [\\chi^*(\\phi_\{new,i\})
-  #' - \\chi^*(\\phi_\{old,i\}) - \\dot\\chi^*(\\phi_\{old,i\}) \\cdot (\\phi_\{new,i\} - \\phi_\{old,i\})]}
+  #' Bregman divergence \eqn{D_{\chi^*}(\phi_{new}, \phi_{old}) = \sum w_i [\chi^*(\phi_{new,i})
+  #' - \chi^*(\phi_{old,i}) - \dot\chi^*(\phi_{old,i}) \cdot (\phi_{new,i} - \phi_{old,i})]}
   bregman_conv = function(theta_old, theta_new) {
     phi_fn = function(th) {
       a = th[1:n_row]; b = if (d > 0) th[(n_row+1):(n_row+d)] else numeric(0)
@@ -190,17 +190,17 @@ kernel_bregman = function(Z, kern, eta, dispersion,
 
 #' ## `project_target`
 #'
-#' **Paper**: the linear functional \eqn{\\dot\\psi_Z} acts on the
-#' representer \eqn{\\phi = K\\alpha + B\\beta} as
-#' \deqn{\\dot\\psi_Z(\\phi) = \\sum_i r_i\\,\\phi(Z_i^\{\\dot\\psi\})
-#'   = c^\\top\\alpha + c_0^\\top\\beta}
+#' **Paper**: the linear functional \eqn{\dot\psi_Z} acts on the
+#' representer \eqn{\phi = K\alpha + B\beta} as
+#' \deqn{\dot\psi_Z(\phi) = \sum_i r_i\,\phi(Z_i^{\dot\psi})
+#'   = c^\top\alpha + c_0^\top\beta}
 #' where \eqn{r_i} are the signed measure weights and
-#' \eqn{Z_i^\{\\dot\\psi\}} are the evaluation points (possibly
+#' \eqn{Z_i^{\dot\psi}} are the evaluation points (possibly
 #' counterfactual: \eqn{(u, w, X_i)} for each arm \eqn{w}).
 #'
-#' **Code**: \eqn{c_j = \\sum_i r_i\\,K(Z_j^\{\\mathrm\{basis\}\}, Z_i^\{\\dot\\psi\})
-#'   = (K_\{\\mathrm\{cross\}\}\\, r)_j} and
-#' \eqn{c_0 = B^\\top r}. Returns `c(c, c_0)`.
+#' **Code**: \eqn{c_j = \sum_i r_i\,K(Z_j^{\mathrm{basis}}, Z_i^{\dot\psi})
+#'   = (K_{\mathrm{cross}}\, r)_j} and
+#' \eqn{c_0 = B^\top r}. Returns `c(c, c_0)`.
 project_target = function(basis_Z, kern, measure, K_cross = NULL) {
   basis_Z = atleast_2d(basis_Z)
   measure$Z = atleast_2d(measure$Z)
@@ -214,7 +214,8 @@ project_target = function(basis_Z, kern, measure, K_cross = NULL) {
 #' ## `split_target`
 #'
 #' Splits the concatenated output of `project_target` into
-#' `target` (first \eqn{n} entries) and `target_null` (remaining \eqn{d} entries).
+#' `target` (first \eqn{n} entries) and `target_null` (remaining
+#' \eqn{d} entries).
 split_target = function(c_vec, n) {
   list(target = c_vec[1:n],
        target_null = if (length(c_vec) > n) c_vec[(n + 1):length(c_vec)] else numeric(0))
@@ -226,13 +227,13 @@ split_target = function(c_vec, n) {
 #' ### `cv_dual_loss`
 #'
 #' **Paper**: the dual objective evaluated on held-out data:
-#' \deqn{\\hat L_\{\\mathrm\{cv\}\}(\\eta) = \\frac\{1\}\{|I_\{\\mathrm\{test\}\}|\}
-#'   \\sum_\{i \\in I_\{\\mathrm\{test\}\}\} \\bigl[\\chi^*(\\hat\\phi_\\eta(Z_i))
-#'   - c_i\\,\\hat\\phi_\\eta(Z_i)\\bigr]}
+#' \deqn{\hat L_{\mathrm{cv}}(\eta) = \frac{1}{|I_{\mathrm{test}}|}
+#'   \sum_{i \in I_{\mathrm{test}}} \bigl[\chi^*(\hat\phi_\eta(Z_i))
+#'   - c_i\,\hat\phi_\eta(Z_i)\bigr]}
 #' where \eqn{c_i} is the per-observation target from `project_target`
-#' and \eqn{\\hat\\phi_\\eta} is the model fitted on the training fold.
+#' and \eqn{\hat\phi_\eta} is the model fitted on the training fold.
 #'
-#' **Code**: `phi_test` \eqn{= \\hat\\phi_\\eta(Z_\{\\mathrm\{test\}\})} via `.phi`,
+#' **Code**: `phi_test` \eqn{= \hat\phi_\eta(Z_{\mathrm{test}})} via `.phi`,
 #' then `mean(chis(phi_test) - target_test * phi_test)`.
 cv_dual_loss = function(fit, Z_test, target_test, dispersion_test = NULL) {
   phi  = \(Z) .phi(fit, Z)
@@ -245,18 +246,18 @@ cv_dual_loss = function(fit, Z_test, target_test, dispersion_test = NULL) {
 #' ### `loo_loss`
 #'
 #' **Paper**: leave-one-out cross-validation loss, linearized at
-#' convergence. At the optimum \eqn{\\hat\\phi}, the LOO residual for
+#' convergence. At the optimum \eqn{\hat\phi}, the LOO residual for
 #' observation \eqn{i} is
-#' \deqn{e_i^\{\\mathrm\{loo\}\} = \\frac\{e_i^\{\\mathrm\{raw\}\}\}\{1 - H_\{ii\}\}}
-#' where \eqn{e_i^\{\\mathrm\{raw\}\} = n\\eta\\,\\alpha_i / w_\{c,i\}} is the
-#' raw residual (\eqn{w_\{c,i\} = w_i\\,\\ddot\\chi^*(\\phi_i)} is the
-#' curvature weight) and \eqn{H_\{ii\}} is the \eqn{i}-th diagonal of the
-#' hat matrix \eqn{H = W_c^\{1/2\} K (W_c^\{1/2\} K W_c^\{1/2\} + n\\eta I)^\{-1\} W_c^\{1/2\}}.
+#' \deqn{e_i^{\mathrm{loo}} = \frac{e_i^{\mathrm{raw}}}{1 - H_{ii}}}
+#' where \eqn{e_i^{\mathrm{raw}} = n\eta\,\alpha_i / w_{c,i}} is the
+#' raw residual (\eqn{w_{c,i} = w_i\,\ddot\chi^*(\phi_i)} is the
+#' curvature weight) and \eqn{H_{ii}} is the \eqn{i}-th diagonal of the
+#' hat matrix \eqn{H = W_c^{1/2} K (W_c^{1/2} K W_c^{1/2} + n\eta I)^{-1} W_c^{1/2}}.
 #'
-#' **Code**: \eqn{\\tilde K = W_c^\{1/2\} K W_c^\{1/2\}} has eigendecomposition
-#' \eqn{V \\Lambda V^\\top}. Then \eqn{H_\{ii\} = \\sum_j V_\{ij\}^2\\,\\lambda_j /
-#' (\\lambda_j + n\\eta)} and
-#' `loo_loss` \eqn{= n^\{-1\}\\sum_i w_\{c,i\}\\,(e_i^\{\\mathrm\{loo\}\})^2}.
+#' **Code**: \eqn{\tilde K = W_c^{1/2} K W_c^{1/2}} has eigendecomposition
+#' \eqn{V \Lambda V^\top}. Then \eqn{H_{ii} = \sum_j V_{ij}^2\,\lambda_j /
+#' (\lambda_j + n\eta)} and
+#' `loo_loss` \eqn{= n^{-1}\sum_i w_{c,i}\,(e_i^{\mathrm{loo}})^2}.
 loo_loss = function(fit) {
   K = fit$K; n_row = nrow(K); n = if (!is.null(fit$n)) fit$n else n_row
   phi = as.vector(K %*% fit$alpha)
@@ -279,22 +280,22 @@ loo_loss = function(fit) {
 
 #' ## `onestep_bregman`
 #'
-#' **Paper**: Poisson multiplier bootstrap. Draw \eqn{\\xi_i \\sim
-#' \\mathrm\{Poisson\}(1)}, reweight, and take one Newton step from
-#' the original solution \eqn{(\\hat\\alpha, \\hat\\beta)}:
-#' \deqn{\\theta^* = \\hat\\theta - M^\{-1\}\\,\\nabla L^*(\\hat\\theta)}
-#' where \eqn{M = H(\\hat\\theta)} is the Hessian at the original
-#' solution (cached via `get_M_lu`) and \eqn{\\nabla L^*} is the
-#' gradient with bootstrap weights \eqn{w^* = \\xi} and possibly
+#' **Paper**: Poisson multiplier bootstrap. Draw \eqn{\xi_i \sim
+#' \mathrm{Poisson}(1)}, reweight, and take one Newton step from
+#' the original solution \eqn{(\hat\alpha, \hat\beta)}:
+#' \deqn{\theta^* = \hat\theta - M^{-1}\,\nabla L^*(\hat\theta)}
+#' where \eqn{M = H(\hat\theta)} is the Hessian at the original
+#' solution (cached via `get_M_lu`) and \eqn{\nabla L^*} is the
+#' gradient with bootstrap weights \eqn{w^* = \xi} and possibly
 #' updated targets \eqn{c^*}.
 #'
-#' **Code**: the gradient \eqn{\\nabla_\\alpha L^* = K(w^* \\odot
-#' \\dot\\chi^*(\\hat\\phi)) + n\\eta\\,K\\hat\\alpha - c^*} is
-#' pre-multiplied by \eqn{K^\{-1\}} (via `pchol_solve`), then
-#' \deqn{\\delta = M^\{-1\}\\begin\{pmatrix\} K^\{-1\}(-\\nabla_\\alpha L^*) \\\\
-#'   -\\nabla_\\beta L^* \\end\{pmatrix\}}
-#' gives \eqn{\\alpha^* = \\hat\\alpha + \\delta_\\alpha},
-#' \eqn{\\beta^* = \\hat\\beta + \\delta_\\beta}.
+#' **Code**: the gradient \eqn{\nabla_\alpha L^* = K(w^* \odot
+#' \dot\chi^*(\hat\phi)) + n\eta\,K\hat\alpha - c^*} is
+#' pre-multiplied by \eqn{K^{-1}} (via `pchol_solve`), then
+#' \deqn{\delta = M^{-1}\begin{pmatrix} K^{-1}(-\nabla_\alpha L^*) \\
+#'   -\nabla_\beta L^* \end{pmatrix}}
+#' gives \eqn{\alpha^* = \hat\alpha + \delta_\alpha},
+#' \eqn{\beta^* = \hat\beta + \delta_\beta}.
 #'
 #' One step is correct because the multiplier bootstrap targets
 #' the linear approximation; iterating would undo the perturbation.
@@ -382,7 +383,7 @@ onestep_bregman = function(model, target_new, target_null_new = NULL, w_new = NU
 #' ## `.phi.kernel_bregman`
 #'
 #' Evaluate the linear predictor
-#' \eqn{\\hat\\phi(Z) = \\sum_j \\alpha_j\\,k(Z, Z_j) + B(Z)^\\top\\beta}
+#' \eqn{\hat\phi(Z) = \sum_j \alpha_j\,k(Z, Z_j) + B(Z)^\top\beta}
 #' at new points \eqn{Z}.
 #'
 #' One path: `kernel_matrix(Z, model$Z, kern)`. If `.bind` cached

@@ -4,29 +4,29 @@
 #' crossfitting and Poisson multiplier bootstrap.
 #'
 #' **Paper** (spinoff3, eq:one-step-general): the DR estimator is
-#' \deqn{\\hat\\psi = \\hat P\\bigl[\\psi_Z^1(\\hat\\lambda) - \\psi_Z^\{-1\}(\\hat\\lambda)\\bigr]
-#'   + \\hat P\\,\\hat\\gamma(Z)\\\{Y - \\hat\\lambda(Z)\\\}}
+#' \deqn{\hat\psi = \hat P\bigl[\psi_Z^1(\hat\lambda) - \psi_Z^{-1}(\hat\lambda)\bigr]
+#'   + \hat P\,\hat\gamma(Z)\{Y - \hat\lambda(Z)\}}
 #' The first term is the plug-in (direct) estimate using the
-#' hazard model \eqn{\\hat\\lambda}; the second is the weighted-residual
-#' correction using balancing weights \eqn{\\hat\\gamma}.
+#' hazard model \eqn{\hat\lambda}; the second is the weighted-residual
+#' correction using balancing weights \eqn{\hat\gamma}.
 #'
 #' With crossfitting (eq:crossfit):
-#' \deqn{\\hat\\psi = \\frac\{1\}\{n\}\\sum_i \\hat V_i, \\quad
-#'   \\hat V_i = \\psi_\{Z_i\}(\\hat\\lambda_\{-i\}) +
-#'   E_U\\,\\hat\\gamma_i(U)\\\{Y_i^U - \\hat\\lambda_U(Z_i)\\\}}
+#' \deqn{\hat\psi = \frac{1}{n}\sum_i \hat V_i, \quad
+#'   \hat V_i = \psi_{Z_i}(\hat\lambda_{-i}) +
+#'   E_U\,\hat\gamma_i(U)\{Y_i^U - \hat\lambda_U(Z_i)\}}
 #'
-#' **Pipeline**: `mesh_project` \eqn{\\to} `fit_lambda` \eqn{\\to} `fit_gamma`
-#' \eqn{\\to} `estimate` \eqn{\\to} `pool_folds`, wrapped by `survival_effect`.
+#' **Pipeline**: `mesh_project` \eqn{\to} `fit_lambda` \eqn{\to} `fit_gamma`
+#' \eqn{\to} `estimate` \eqn{\to} `pool_folds`, wrapped by `survival_effect`.
 #'
 #' ## Per-fold primitives
 #'
-#' - `fit_lambda`: hazard model on fold \eqn{I_\\lambda}
-#' - `fit_gamma`: weight model on fold \eqn{I_\\psi}, given \eqn{\\hat\\lambda}
-#' - `estimate`: plug-in + correction on fold \eqn{I_\\psi}
+#' - `fit_lambda`: hazard model on fold \eqn{I_\lambda}
+#' - `fit_gamma`: weight model on fold \eqn{I_\psi}, given \eqn{\hat\lambda}
+#' - `estimate`: plug-in + correction on fold \eqn{I_\psi}
 #'
 #' ## Aggregation
 #'
-#' - `pool_folds`: pool per-fold \eqn{\\hat V_i} into a `effect_estimate`
+#' - `pool_folds`: pool per-fold \eqn{\hat V_i} into a `effect_estimate`
 #'
 #' ## Bootstrap
 #'
@@ -39,17 +39,17 @@
 
 #' ### `gamma_measure`
 #'
-#' **Paper**: the embedding vector \eqn{c_\\gamma} for the weight
-#' model encodes \eqn{\\nabla_\\phi\\,\\dot\\psi_Z}, the gradient of the
-#' estimand functional w.r.t. the dual variable \eqn{\\phi_\\gamma}.
+#' **Paper**: the embedding vector \eqn{c_\gamma} for the weight
+#' model encodes \eqn{\nabla_\phi\,\dot\psi_Z}, the gradient of the
+#' estimand functional w.r.t. the dual variable \eqn{\phi_\gamma}.
 #' For survival ATE (eq:cgam):
-#' \deqn{c_\{\\gamma,jm'\} = \\frac\{1\}\{|I_\\psi|\\,M\}\\sum_\{i \\in I_\\psi\}
-#'   \\sum_w w\\,\\hat S_t(w, X_i) \\sum_m K\\bigl((u_\{m'\}, W_j, X_j),\\,
-#'   (u_m, w, X_i)\\bigr)}
+#' \deqn{c_{\gamma,jm'} = \frac{1}{|I_\psi|\,M}\sum_{i \in I_\psi}
+#'   \sum_w w\,\hat S_t(w, X_i) \sum_m K\bigl((u_{m'}, W_j, X_j),\,
+#'   (u_m, w, X_i)\bigr)}
 #'
 #' **Code**: calls `estimand$dpsi_grid(predict_haz, ...)` to get
-#' the signed measure \eqn{(Z^\{\\dot\\psi\}, r)}, then passes to
-#' `project_target`.  Raw sum scale — no normalization by \eqn{|I_\\psi|},
+#' the signed measure \eqn{(Z^{\dot\psi}, r)}, then passes to
+#' `project_target`.  Raw sum scale — no normalization by \eqn{|I_\psi|},
 #' matching the solver's sum-scale objective.
 gamma_measure = function(estimand, predict_haz, mp, w_eval = NULL) {
   emb = estimand$dpsi_grid(predict_haz, mp$eval_Z, mp$mesh_u, mp$train_grid)
@@ -64,12 +64,12 @@ gamma_measure = function(estimand, predict_haz, mp, w_eval = NULL) {
 #' ### `compute_direct`
 #'
 #' **Paper**: the plug-in estimate
-#' \eqn{\\hat P[\\psi_Z^w(\\hat\\lambda)]} evaluates the estimand
-#' functional at the fitted hazard \eqn{\\hat\\lambda_u(w, X_i) =
-#' \\dot\\chi^*_\\lambda(\\hat\\phi_\\lambda(u, w, X_i))}.
+#' \eqn{\hat P[\psi_Z^w(\hat\lambda)]} evaluates the estimand
+#' functional at the fitted hazard \eqn{\hat\lambda_u(w, X_i) =
+#' \dot\chi^*_\lambda(\hat\phi_\lambda(u, w, X_i))}.
 #'
 #' **Code**: `predict_haz(k, Z_ev)` returns
-#' \eqn{\\hat\\lambda_\{u_k\}(Z_\{\\mathrm\{ev\}\})} on the training mesh.
+#' \eqn{\hat\lambda_{u_k}(Z_{\mathrm{ev}})} on the training mesh.
 #' `predict_dLambda(k, Z_ev)` rescales to the evaluation grid
 #' (for continuous: `scale = du_eval / du_bin`).
 #' `estimand$direct(predict_dLambda, eval_Z, grid)` computes
@@ -95,13 +95,13 @@ compute_direct = function(phi, lambda_disp, estimand, mp, grid) {
 #' ### `correction_terms`
 #'
 #' **Paper**: the DR correction (second term of eq:one-step-general):
-#' \deqn{E_U\\,\\hat\\gamma_i(U)\\\{Y_i^U - \\hat\\lambda_U(Z_i)\\\}
-#'   = \\underbrace\{\\hat\\gamma_i(T_i)\\,\\mathbf\{1\}(D_i=1)\}_\{\\text\{Dirac\}\}
-#'   - \\underbrace\{\\int_0^\{T_i^*\} \\hat\\gamma_u(W_i, X_i)\\,
-#'     \\hat\\lambda_u(W_i, X_i)\\,du\}_\{\\text\{compensator\}\}}
+#' \deqn{E_U\,\hat\gamma_i(U)\{Y_i^U - \hat\lambda_U(Z_i)\}
+#'   = \underbrace{\hat\gamma_i(T_i)\,\mathbf{1}(D_i=1)}_{\text{Dirac}}
+#'   - \underbrace{\int_0^{T_i^*} \hat\gamma_u(W_i, X_i)\,
+#'     \hat\lambda_u(W_i, X_i)\,du}_{\text{compensator}}}
 #'
 #' **Code**: `compensator(...)` computes the integral via
-#' quadrature. The Dirac term evaluates \eqn{\\hat\\gamma} at each
+#' quadrature. The Dirac term evaluates \eqn{\hat\gamma} at each
 #' subject's event time using `dchis_gamma(Z_ev, phi_ev)`.
 correction_terms = function(mp, lambda_fit_, gamma_fit_, lambda_disp, dchis_gamma,
                             comp_grid) {
@@ -128,21 +128,21 @@ correction_terms = function(mp, lambda_fit_, gamma_fit_, lambda_disp, dchis_gamm
 #' ### `build_gamma_correction`
 #'
 #' **Paper**: the weight model's correction prediction is
-#' \eqn{\\hat\\gamma_u(W_i, X_i) = \\dot\\chi^*_Z(\\hat\\phi_\\gamma(u, W_i, X_i))}
+#' \eqn{\hat\gamma_u(W_i, X_i) = \dot\chi^*_Z(\hat\phi_\gamma(u, W_i, X_i))}
 #' where the Z-dependent dispersion uses the Riesz representer
-#' offset \eqn{r_\{im\} = \\dot\\psi_\{Z_i\}(\\hat\\lambda)(u_m)}.
+#' offset \eqn{r_{im} = \dot\psi_{Z_i}(\hat\lambda)(u_m)}.
 #'
 #' For the ATE with target-scaled entropy (TSE):
-#' \deqn{\\hat\\gamma_\{im\} = r_\{im\} + \\mathrm\{sign\}(r_\{im\})\\,
-#'   e^\{\\mathrm\{sign\}(r_\{im\})\\,\\hat\\phi_\{\\gamma,im\}\}}
-#' Floors \eqn{|\\hat\\gamma|} at \eqn{|r|}, then exponential on the excess.
+#' \deqn{\hat\gamma_{im} = r_{im} + \mathrm{sign}(r_{im})\,
+#'   e^{\mathrm{sign}(r_{im})\,\hat\phi_{\gamma,im}}}
+#' Floors \eqn{|\hat\gamma|} at \eqn{|r|}, then exponential on the excess.
 #'
 #' **Code**: returns a closure `dchis_gamma(Z, phi)` that
-#' (1) looks up \eqn{r_\{im\}} for each \eqn{(i, m)} pair from the
+#' (1) looks up \eqn{r_{im}} for each \eqn{(i, m)} pair from the
 #' precomputed linearization grid, and
 #' (2) evaluates `.dchis(dispersion(gamma_base, offset=r, sigma=sigma), phi)`.
-#' For ATE estimands, \eqn{\\sigma = -W} (from `gamma_disp_sigma`);
-#' for TSM, \eqn{\\sigma = \\mathrm\{sign\}(r)}.
+#' For ATE estimands, \eqn{\sigma = -W} (from `gamma_disp_sigma`);
+#' for TSM, \eqn{\sigma = \mathrm{sign}(r)}.
 build_gamma_correction = function(predict_haz, estimand_obj, eval_Z,
                                 train_grid, gamma_base = entropy_base,
                                 gamma_disp_sigma = estimand_obj$gamma_disp_sigma) {
@@ -179,19 +179,19 @@ build_gamma_correction = function(predict_haz, estimand_obj, eval_Z,
 
 #' ## `mesh_project`
 #'
-#' **Paper**: discretize the time axis \eqn{[0, \\bar t]} into \eqn{M}
-#' bins with mesh points \eqn{u_1, \\ldots, u_M}. For each subject
-#' \eqn{i} with observed time \eqn{\\tilde T_i}, the at-risk set is
-#' \eqn{\\mathcal\{D\}_i = \\\{m : \\tilde T_i \\ge u_m\\\}}. The stacked
-#' data \eqn{\\mathcal\{D\} = \\\{(i, m) : i \\in I_\\lambda,\\, m \\in
-#' \\mathcal\{D\}_i\\\}} has response \eqn{Y_\{im\} =
-#' \\mathbf\{1\}(\\tilde T_i \\in [u_\{m-1\}, u_m),\\, D_i = 1)}.
+#' **Paper**: discretize the time axis \eqn{[0, \bar t]} into \eqn{M}
+#' bins with mesh points \eqn{u_1, \ldots, u_M}. For each subject
+#' \eqn{i} with observed time \eqn{\tilde T_i}, the at-risk set is
+#' \eqn{\mathcal{D}_i = \{m : \tilde T_i \ge u_m\}}. The stacked
+#' data \eqn{\mathcal{D} = \{(i, m) : i \in I_\lambda,\, m \in
+#' \mathcal{D}_i\}} has response \eqn{Y_{im} =
+#' \mathbf{1}(\tilde T_i \in [u_{m-1}, u_m),\, D_i = 1)}.
 #'
 #' **Code**: one `mesh_projection` per crossfit fold, containing:
 #' - `stacked_lambda`: at-risk pairs for hazard training
 #' - `stacked_gamma`: at-risk pairs for weight estimation
 #' - `K_lambda`, `K_gamma`: kernel matrices on stacked data
-#' - `tgt_lambda`: projected target \eqn{c_\\lambda = K_\{\\mathcal\{D\}\}\\,Y}
+#' - `tgt_lambda`: projected target \eqn{c_\lambda = K_{\mathcal{D}}\,Y}
 #' - `eval_Z`, `T_obs_eval`, `D_eval`: evaluation fold data
 mesh_project = function(observations, horizon, M_train, n_folds, kern,
                         kern_gamma = kern, discrete = FALSE) {
@@ -252,14 +252,14 @@ mesh_project = function(observations, horizon, M_train, n_folds, kern,
 #' ## `fit_lambda`
 #'
 #' **Paper** (eq:hazard-alpha): fit the hazard model on stacked
-#' at-risk pairs \eqn{\\mathcal\{D\}}:
-#' \deqn{\\min_\\alpha \\frac\{1\}\{|\\mathcal\{D\}|\}\\sum_\{(i,m) \\in \\mathcal\{D\}\}
-#'   \\bigl[\\chi^*_\\lambda(\\phi_\{im\}) - Y_\{im\}\\,\\phi_\{im\}\\bigr]
-#'   + \\eta_\\lambda\\,\\alpha^\\top K_\{\\mathcal\{D\}\}\\,\\alpha}
-#' where \eqn{\\phi = K_\{\\mathcal\{D\}\}\\,\\alpha + B\\beta} and
-#' \eqn{\\hat\\lambda_u(Z_i) = \\dot\\chi^*_\\lambda(\\phi_\{im\})}.
+#' at-risk pairs \eqn{\mathcal{D}}:
+#' \deqn{\min_\alpha \frac{1}{|\mathcal{D}|}\sum_{(i,m) \in \mathcal{D}}
+#'   \bigl[\chi^*_\lambda(\phi_{im}) - Y_{im}\,\phi_{im}\bigr]
+#'   + \eta_\lambda\,\alpha^\top K_{\mathcal{D}}\,\alpha}
+#' where \eqn{\phi = K_{\mathcal{D}}\,\alpha + B\beta} and
+#' \eqn{\hat\lambda_u(Z_i) = \dot\chi^*_\lambda(\phi_{im})}.
 #'
-#' **Code**: wraps `kernel_bregman` with `target` \eqn{= K_\{\\mathcal\{D\}\}\\,Y}
+#' **Code**: wraps `kernel_bregman` with `target` \eqn{= K_{\mathcal{D}}\,Y}
 #' (precomputed in `mesh_project`).
 fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL,
                       K_chol = NULL, maxiter = 100, log = null_logger) {
@@ -276,16 +276,16 @@ fit_lambda = function(mp, kern, eta, lambda_disp, warm = NULL,
 #' ## `fit_gamma`
 #'
 #' **Paper** (eq:weight-beta): fit the weight model on stacked
-#' at-risk pairs \eqn{\\mathcal\{E\}}:
-#' \deqn{\\min_\\beta \\frac\{1\}\{|\\mathcal\{E\}|\}\\sum_\{(i,m) \\in \\mathcal\{E\}\}
-#'   \\chi^*_Z(\\phi_\{im\}) - c_\\gamma^\\top\\beta
-#'   + \\eta_\\gamma\\,\\beta^\\top K_\{\\mathcal\{E\}\}\\,\\beta}
-#' The target \eqn{c_\\gamma} embeds \eqn{\\nabla_\\phi\\,\\dot\\psi_Z}, which
+#' at-risk pairs \eqn{\mathcal{E}}:
+#' \deqn{\min_\beta \frac{1}{|\mathcal{E}|}\sum_{(i,m) \in \mathcal{E}}
+#'   \chi^*_Z(\phi_{im}) - c_\gamma^\top\beta
+#'   + \eta_\gamma\,\beta^\top K_{\mathcal{E}}\,\beta}
+#' The target \eqn{c_\gamma} embeds \eqn{\nabla_\phi\,\dot\psi_Z}, which
 #' evaluates at **counterfactual** arms \eqn{(u, w, X_i)} for both
-#' \eqn{w \\in \\\{-1, +1\\\}}, weighted by \eqn{w\\,\\hat S_t(w, X_i)}.
+#' \eqn{w \in \{-1, +1\}}, weighted by \eqn{w\,\hat S_t(w, X_i)}.
 #'
 #' **Code**: calls `gamma_measure` to build the signed measure
-#' \eqn{(Z^\{\\dot\\psi\}, r)}, projects onto the representer basis via
+#' \eqn{(Z^{\dot\psi}, r)}, projects onto the representer basis via
 #' `project_target`, then solves with `kernel_bregman`.
 #' The `gamma_disp_fn` maps the target \eqn{r} to a Z-dependent
 #' dispersion (default: target-scaled entropy).
@@ -358,11 +358,11 @@ fit_gamma = function(mp, lambda_fit, kern, eta, estimand,
 #' ## `estimate`
 #'
 #' **Paper**: compute the per-subject influence function terms
-#' \deqn{\\hat V_i = \\psi_\{Z_i\}(\\hat\\lambda)
-#'   + E_U\\,\\hat\\gamma_i(U)\\\{Y_i^U - \\hat\\lambda_U(Z_i)\\\}}
-#' The first term is `direct` (plug-in at \eqn{\\hat\\lambda}); the
+#' \deqn{\hat V_i = \psi_{Z_i}(\hat\lambda)
+#'   + E_U\,\hat\gamma_i(U)\{Y_i^U - \hat\lambda_U(Z_i)\}}
+#' The first term is `direct` (plug-in at \eqn{\hat\lambda}); the
 #' second is `correction` (Dirac minus compensator).
-#' Returns `terms` \eqn{= \\hat V_i} for aggregation.
+#' Returns `terms` \eqn{= \hat V_i} for aggregation.
 estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
   lambda_disp = lambda_fit$dispersion
   lambda_fit_ = .bind(lambda_fit, mp$eval_Z)
@@ -387,13 +387,13 @@ estimate = function(mp, lambda_fit, gamma_result, estimand, grid) {
 #' ## `pool_folds`
 #'
 #' **Paper** (eq:crossfit): pool crossfit folds:
-#' \deqn{\\hat\\psi = \\frac\{1\}\{n\}\\sum_i \\hat V_i, \\quad
-#'   \\hat\\sigma^2 = \\frac\{1\}\{n\}\\sum_i \\hat V_i^2}
+#' \deqn{\hat\psi = \frac{1}{n}\sum_i \hat V_i, \quad
+#'   \hat\sigma^2 = \frac{1}{n}\sum_i \hat V_i^2}
 #'
-#' **Code**: collects per-fold `terms` \eqn{= \\hat V_i} into a
-#' length-\eqn{n} vector. Returns `est` \eqn{= \\bar V}, `se` \eqn{=
-#' \\mathrm\{sd\}(V)/\\sqrt\{n\}}, and `se_amle` \eqn{= \\sqrt\{(\\mathrm\{Var\}(
-#' \\text\{direct\}) + \\bar\{\\text\{noise\\_var\}\})/n\}} (AMLE variance
+#' **Code**: collects per-fold `terms` \eqn{= \hat V_i} into a
+#' length-\eqn{n} vector. Returns `est` \eqn{= \bar V}, `se` \eqn{=
+#' \mathrm{sd}(V)/\sqrt{n}}, and `se_amle` \eqn{= \sqrt{(\mathrm{Var}(
+#' \text{direct}) + \bar{\text{noise\_var}})/n}} (AMLE variance
 #' estimate using plug-in variance + noise variance separately).
 pool_folds = function(mps, lambda_fits, gamma_results, fold_estimates,
                         kern, eta_gam, lambda_disp, estimand,
@@ -437,8 +437,8 @@ pool_folds = function(mps, lambda_fits, gamma_results, fold_estimates,
 #' ## `survival_effect`
 #'
 #' Convenience wrapper: runs the full pipeline
-#' `mesh_project` \eqn{\\to} `fit_lambda` \eqn{\\to} `fit_gamma` \eqn{\\to}
-#' `estimate` \eqn{\\to} `pool_folds`.
+#' `mesh_project` \eqn{\to} `fit_lambda` \eqn{\to} `fit_gamma` \eqn{\to}
+#' `estimate` \eqn{\to} `pool_folds`.
 #'
 #' Accepts pre-computed intermediate results (`mps`,
 #' `lambda_fits`, `gamma_results`) to allow reuse across
@@ -486,15 +486,15 @@ survival_effect = function(observations, kern, estimand, lambda_disp,
 #' **Paper** (spinoff3, sec:bootstrap): Poisson multiplier
 #' bootstrap. For each replicate \eqn{b}:
 #'
-#' 1. Draw \eqn{\\xi_i \\sim \\mathrm\{Poisson\}(1)}, \eqn{i = 1,\\ldots,n}.
-#' 2. One-step Newton refit of \eqn{\\hat\\lambda^*}: reweight the
-#'    target \eqn{c_\\lambda^* = K_\{\\mathcal\{D\}\}(\\xi \\odot Y)} and
-#'    observation weights \eqn{w^* = \\xi}, then
-#'    \eqn{\\alpha_\\lambda^* = \\hat\\alpha_\\lambda - M_\\lambda^\{-1\}
-#'    \\nabla L_\\lambda^*(\\hat\\alpha_\\lambda)} using cached \eqn{M}.
-#' 3. Refit \eqn{\\hat\\gamma^*} with updated survival predictions
-#'    from \eqn{\\hat\\lambda^*} and reweighted targets (`maxiter = 1`).
-#' 4. Compute DR estimate \eqn{\\hat\\psi^* = n^\{-1\}\\sum_i \\xi_i\\hat V_i^*}.
+#' 1. Draw \eqn{\xi_i \sim \mathrm{Poisson}(1)}, \eqn{i = 1,\ldots,n}.
+#' 2. One-step Newton refit of \eqn{\hat\lambda^*}: reweight the
+#'    target \eqn{c_\lambda^* = K_{\mathcal{D}}(\xi \odot Y)} and
+#'    observation weights \eqn{w^* = \xi}, then
+#'    \eqn{\alpha_\lambda^* = \hat\alpha_\lambda - M_\lambda^{-1}
+#'    \nabla L_\lambda^*(\hat\alpha_\lambda)} using cached \eqn{M}.
+#' 3. Refit \eqn{\hat\gamma^*} with updated survival predictions
+#'    from \eqn{\hat\lambda^*} and reweighted targets (`maxiter = 1`).
+#' 4. Compute DR estimate \eqn{\hat\psi^* = n^{-1}\sum_i \xi_i\hat V_i^*}.
 #'
 #' **Code**: pre-computes cross-kernel matrices `K_cross_gamma`
 #' for target projection (avoids recomputing per replicate).
